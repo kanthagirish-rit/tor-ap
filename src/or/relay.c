@@ -532,7 +532,10 @@ circuit_package_relay_cell(cell_t *cell, circuit_t *circ,
       }
 
       thishop = thishop->prev;
-    } while (thishop != TO_ORIGIN_CIRCUIT(circ)->cpath->prev);
+      /* Run loop until we hit layer_hint again. (Using layer_hint
+       * rather than the circ->cpath->prev allows leaky-pipe sends with short
+       * cpaths). */
+    } while (thishop != layer_hint);
 
   } else { /* incoming cell */
     or_circuit_t *or_circ;
