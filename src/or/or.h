@@ -82,6 +82,8 @@
 #include "tor_queue.h"
 #include "util_format.h"
 #include "hs_circuitmap.h"
+#include "circuitpadding.h"
+#include "handles.h"
 
 /* These signals are defined to help handle_control_signal work.
  */
@@ -3084,6 +3086,14 @@ typedef struct circuit_t {
   /** Hashtable node: used to look up the circuit by its HS token using the HS
       circuitmap. */
   HT_ENTRY(circuit_t) hs_circuitmap_node;
+
+  /* Adaptive Padding state machines: these are immutable */
+  const circpad_machine_t *padding_machine[CIRCPAD_MAX_MACHINES];
+
+  /* Adaptive Padding machine info for above machines */
+  circpad_machineinfo_t *padding_info[CIRCPAD_MAX_MACHINES];
+  circpad_machineinfo_handles_t *padding_handles[CIRCPAD_MAX_MACHINES];
+
 } circuit_t;
 
 /** Largest number of relay_early cells that we can send on a given
