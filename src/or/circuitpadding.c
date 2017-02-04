@@ -1,6 +1,9 @@
 /* Copyright (c) 2017 The Tor Project, Inc. */
 /* See LICENSE for licensing information */
 
+#include "or.h"
+#include "compat_time.h"
+
 HANDLE_IMPL(circpad_machineinfo, circpad_machineinfo_t,);
 
 /* Histogram helpers */
@@ -33,11 +36,18 @@ inline static const circpad_state_t *circpad_machine_current_state(
   tor_assert(0);
 }
 
-static void circpad_machine_fill_tokens(circpad_machineinfo_t *mi)
+/**
+ * This function frees any token bins allocated from a previous state
+ *
+ * Called after a state transition, or if the bins are empty.
+ */
+static void circpad_machine_setup_tokens(circpad_machineinfo_t *mi)
 {
   circpad_state_t *state = circpad_machine_current_state(mi);
 
-  if (!state->remove_tokens) {
+  /* If this state doesn't exist, or doesn't have token removal,
+   * free any previous state's histogram, and bail */
+  if (!state || !state->remove_tokens) {
     if (mi->histogram) {
       tor_free(mi->histogram);
       mi->histogram = NULL;
@@ -46,34 +56,36 @@ static void circpad_machine_fill_tokens(circpad_machineinfo_t *mi)
     return;
   }
 
-  if (!mi->histogram) {
+  /* Try to avoid re-mallocing if we don't really need to */
+  if (!mi->histogram || mi->histogram && mi->histogram_len != state->histogram_len) {
+    tor_free(mi->histogram); // null ok
     mi->histogram = tor_malloc_zero(sizeof(uint16_t)*state->histogram_len);
-    mi->histogram_len = state->histogram_len;
   }
+  mi->histogram_len = state->histogram_len;
 
-  tor_assert(state->histogram_len == mi->histogram_len);
   memcpy(mi->histogram, state->histogram, sizeof(uint16_t)*state->histogram_len);
 }
 
-// TODO: support token removal and the empty event..
-inline static uint32_t circpad_machine_sample_delay(circpad_machineinfo_t *mi)
+inline static uint32_t circpad_machine_sample_delay(circpad_machineinfo_t *mi,
+                                                    int *empty_hint)
 {
   circpad_state_t *state = circpad_machine_current_state(mi);
-  int i = 0;
-  tor_assert(state);
   const uint16_t *histogram = NULL;
-
+  int i = 0;
   uint32_t curr_weight;
   uint32_t histogram_total = 0;
   uint32_t bin_choice; 
   uint16_t bin_start, bin_end;
 
+  tor_assert(state);
+  tor_assert(empty_hint);
+
   if (state->remove_tokens) {
     tor_assert(mi->histogram && mi->histogram_len == state->histogram_len);
 
     histogram = mi->histogram;
-    for (int i = 0; i < state->histogram_len; i++)
-      histogram_total += histogram[i];
+    for (int b = 0; i < state->histogram_len; b++)
+      histogram_total += histogram[b];
   } else {
     histogram = state->histogram;
     histogram_total = state->histogram_total;
@@ -82,9 +94,25 @@ inline static uint32_t circpad_machine_sample_delay(circpad_machineinfo_t *mi)
   bin_choice = crypto_rand_int(histogram_total);
   curr_weight = state->histogram[0];
 
+  // XXX: fencepost? what does this do for the last bin?
   while (curr_weight < bin_choice) {
+    tor_assert(i < state->histogram_len);
     curr_weight += histogram[i];
     i++;
+  }
+
+  tor_assert(curr_weight);
+  tor_assert(i < state->histogram_len);
+
+  if (state->remove_tokens) {
+    tor_assert(mi->histogram[i] > 0);
+    mi->histogram[i]--;
+  }
+
+  if (curr_weight == total_weight) {
+    *empty_hint = 1;
+  } else {
+    *empty_hint = 0;
   }
 
   if (i == state->histogram_len-1)
@@ -139,7 +167,11 @@ static void cpath_free_shallow(crypt_path_t *cpath)
 {
   crypt_path_t *iter = cpath;
   crypt_path_t *next;
-  crypt_path_t *last = cpath->prev;
+  crypt_path_t *last;
+
+  if (!cpath) return;
+ 
+  last = cpath->prev;
 
   while(iter != last) {
     next = iter->next;
@@ -164,10 +196,11 @@ int circpad_send_padding_cell_for_callback(circpad_machineinfo_t *mi)
     }
 
     /* Prepare a cpath to get us to the middle hop */
-    cpath = cpath_clone_shallow(TO_ORIGIN_CIRC(mi->on_circ)->cpath, 2);
+    new_cpath = cpath_clone_shallow(TO_ORIGIN_CIRC(mi->on_circ)->cpath, 2);
 
-    // Ensure that both hops are open
-    if (new_cpath->state != CPATH_STATE_OPEN ||
+    // Ensure that our cpath is not short, and we have both hops are open
+    if (!new_cpath || new_cpath == new_cpath->next ||
+        new_cpath->state != CPATH_STATE_OPEN ||
         new_cpath->next->state != CPATH_STATE_OPEN) {
       // XXX: tor_log.. 
       cpath_free_shallow(new_cpath);
@@ -209,19 +242,37 @@ circpad_send_padding_callback(tor_timer_t *timer, void *args,
 int circpad_machine_schedule_padding(circuit_machineinfo_t *mi)
 {
   uint32_t in_us = 0;
+  uint64_t now_us = 0;
+  int bins_empty = 0;
   tor_assert(mi);
-  tor_assert(mi->current_state != CIRCPAD_STATE_START);
-  tor_assert(!mi->is_padding_scheduled);
 
-  // TODO: Remove token for this interval since the last time..
+  // Don't pad in either state start or end.
+  if (mi->current_state == CIRCPAD_STATE_START ||
+      mi->current_state == CIRCPAD_STATE_END) {
+    // XXX: return decision
+    return;
+  }
 
-  in_us = circpad_machine_sample_delay(mi);
+  if (mi->is_padding_scheduled) {
+    /* Cancel current timer (if any) */
+    timer_disable(mi->padding_timer);
+    mi->is_padding_scheduled = 0;
+  }
+
+  in_us = circpad_machine_sample_delay(mi, &bins_empty);
 
   if (in_us <= 0) {
     mi->is_padding_scheduled = 1;
     circpad_send_padding_cell_for_callback(on_circ);
     // XXX: decision enum?
     return CIRCPAD_PADDING_SENT;
+  }
+
+  // Don't schedule if we have infinite delay.
+  if (in_us == CIRCPAD_DELAY_INFINITE) {
+    // XXX: Return differently if we transition or not
+    circpad_event_infinity(mi);
+    return;
   }
 
   timeout.tv_sec = in_us/USEC_PER_SEC;
@@ -246,6 +297,13 @@ int circpad_machine_schedule_padding(circuit_machineinfo_t *mi)
   rep_hist_padding_count_timers(++total_timers_pending);
 
   mi->is_padding_scheduled = 1;
+
+  if (bins_empty) {
+    // XXX: Return differently if we transition or not here
+    circpad_event_bins_empty(mi);
+    return;
+  }
+
   return CIRCPAD_PADDING_SCHEDULED;
 }
 
@@ -260,8 +318,7 @@ int circpad_machine_transition(circpad_machineinfo_t *mi,
     if (CIRCPAD_GET_MACHINE(mi)->transition_burst_events & event) {
       mi->current_state = CIRCPAD_STATE_BURST;
 
-      circpad_machine_fill_tokens(mi);
-  
+      circpad_machine_setup_tokens(mi);
       circpad_machine_schedule_padding(mi);
       return 1;
     }
@@ -271,21 +328,12 @@ int circpad_machine_transition(circpad_machineinfo_t *mi,
   if (state->transition_prev_events & event) {
     mi->current_state = state->prev_state;
 
-    /* Cancel current timer (if any) */
-    timer_disable(mi->padding_timer);
-    mi->is_padding_scheduled = 0;
-
-    circpad_machine_fill_tokens(mi);
-
+    circpad_machine_setup_tokens(mi);
     circpad_machine_schedule_padding(mi);
     return 1;
   }
 
   if (state->transition_reschedule_events & event) {
-    /* Stay in this state, but cancel current timer (if any) */
-    timer_disable(mi->padding_timer);
-    mi->is_padding_scheduled = 0;
-
     circpad_machine_schedule_padding(mi);
     return 1;
   }
@@ -293,12 +341,7 @@ int circpad_machine_transition(circpad_machineinfo_t *mi,
   if (state->transition_next_events & event) {
     mi->current_state = state->next_state;
     
-    /* Cancel current timer (if any) */
-    timer_disable(mi->padding_timer);
-    mi->is_padding_scheduled = 0;
-    
-    circpad_machine_fill_tokens(mi);
-    
+    circpad_machine_setup_tokens(mi);
     circpad_machine_schedule_padding(mi);
     return 1;
   }
@@ -308,8 +351,11 @@ int circpad_machine_transition(circpad_machineinfo_t *mi,
 
 int circpad_event_nonpadding_sent(circuit_t *on_circ)
 {
-  for(int i = 0; i < CIRCPAD_MAX_MACHINES && on_circ->padding_info[i];
-      i++) {
+  for (int i = 0; i < CIRCPAD_MAX_MACHINES && on_circ->padding_info[i];
+       i++) {
+    // XXX: Remove tokens here and check bins empty..
+    circpad_machine_remove_closest_token(mi);
+
     circpad_machine_transition(on_circ->padding_info[i],
                                CIRCPAD_TRANSITION_ON_NONPADDING_SENT); 
   }
@@ -317,7 +363,7 @@ int circpad_event_nonpadding_sent(circuit_t *on_circ)
 
 int circpad_event_nonpadding_recieved(circuit_t *on_circ)
 {
-  for(int i = 0; i < CIRCPAD_MAX_MACHINES && on_circ->padding_info[i];
+  for (int i = 0; i < CIRCPAD_MAX_MACHINES && on_circ->padding_info[i];
       i++) {
     circpad_machine_transition(on_circ->padding_info[i],
                              CIRCPAD_TRANSITION_ON_NONPADDING_RECV); 
@@ -326,8 +372,8 @@ int circpad_event_nonpadding_recieved(circuit_t *on_circ)
 
 int circpad_event_padding_sent(circuit_t *on_circ)
 {
-  for(int i = 0; i < CIRCPAD_MAX_MACHINES && on_circ->padding_info[i];
-      i++) {
+  for (int i = 0; i < CIRCPAD_MAX_MACHINES && on_circ->padding_info[i];
+       i++) {
     circpad_machine_transition(on_circ->padding_info[i],
                              CIRCPAD_TRANSITION_ON_PADDING_SENT); 
   }
@@ -342,24 +388,15 @@ int circpad_event_padding_recieved(circuit_t *on_circ)
   }
 }
 
-int circpad_event_infinity(circuit_t *on_circ)
+int circpad_event_infinity(cirpad_machineinfo_t *mi)
 {
-  for(int i = 0; i < CIRCPAD_MAX_MACHINES && on_circ->padding_info[i];
-      i++) {
-    circpad_machine_transition(on_circ->padding_info[i],
-                               CIRCPAD_TRANSITION_ON_INFINITY);
-  }
+  circpad_machine_transition(mi, CIRCPAD_TRANSITION_ON_INFINITY);
 }
 
-// TODO: This event is never emitted/called (because we don't remove tokens yet)
-int circpad_event_bins_empty(circuit_t *on_circ)
+int circpad_event_bins_empty(circpad_machineinfo_t *mi)
 {
-  for (int i = 0; i < CIRCPAD_MAX_MACHINES && on_circ->padding_info[i];
-       i++) {
-    if (!circpad_machine_transition(on_circ->padding_info[i],
-                               CIRCPAD_TRANSITION_ON_BINS_EMPTY)) {
-      circpad_machine_fill_tokens(on_circ->padding_info[i]);
-    }
+  if (!circpad_machine_transition(mi, CIRCPAD_TRANSITION_ON_BINS_EMPTY)) {
+    circpad_machine_setup_tokens(mi);
   }
 }
 
@@ -446,8 +483,48 @@ const circpad_machine_t *circpad_wtf_machine_new();
 static circpad_machine_t circ_hs_service_rend_machine;
 const circpad_machine_t *circpad_hs_serv_rend_machine_new();
 
-/* Serialization: TODO Writeme */
-char *circpad_machine_to_string(const circpad_machine_t *machine);
-const circpad_machine_t *circpad_string_to_machine(const char *string);
+/* Serialization */
+// TODO: Should we use keyword=value here? Are there helpers for that?
+static void circpad_state_serialize(const circpad_state_t *state,
+                                    smartlist_t *chunks)
+{
+  smartlist_add_asprintf(chunks, " %u", state->histogram[0]);
+  for (int i = 1; i < state->histogram_len; i++) {
+    smartlist_add_asprintf(chunks, ",%u",
+                           state->histogram[i]);
+  }
+
+  smartlist_add_asprintf(chunks, " %u %u 0x%x %u 0x%x 0x%x %u %u",
+                         state->start_usec, state->max_sec,
+                         state->transition_prev_events, state->prev_state, 
+                         state->transition_reschedule_events,
+                         state->transition_next_events, state->next_state,
+                         state->remove_tokens);
+}
+
+char *circpad_machine_to_string(const circpad_machine_t *machine)
+{
+  smartlist_t *chunks = smartlist_new();
+  char *out;
+
+  smartlist_add_asprintf(chunks,
+                         "0x%x",
+                         machine->transition_burst_events);
+ 
+  circpad_state_serialize(&machine->gap, chunks);
+  circpad_state_serialize(&machine->burst, chunks);
+
+  out = smartlist_join_strings(chunks, "", 0, NULL);
+
+  SMARTLIST_FOREACH(chunks, char *, cp, tor_free(cp));
+  smartlist_free(chunks);
+  return out;
+}
+
+// XXX: Writeme
+const circpad_machine_t *circpad_string_to_machine(const char *string)
+{
+  
+}
 
 
