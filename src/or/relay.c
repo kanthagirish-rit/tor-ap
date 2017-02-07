@@ -76,6 +76,7 @@
 #include "routerparse.h"
 #include "scheduler.h"
 #include "rephist.h"
+#include "circuitpadding.h"
 
 static edge_connection_t *relay_lookup_conn(circuit_t *circ, cell_t *cell,
                                             cell_direction_t cell_direction,
@@ -355,9 +356,11 @@ circuit_receive_relay_cell(cell_t *cell, circuit_t *circ,
   if (cell_direction == CELL_DIRECTION_OUT) {
     cell->circ_id = circ->n_circ_id; /* switch it */
     chan = circ->n_chan;
+    circpad_event_nonpadding_recieved(circ);
   } else if (! CIRCUIT_IS_ORIGIN(circ)) {
     cell->circ_id = TO_OR_CIRCUIT(circ)->p_circ_id; /* switch it */
     chan = TO_OR_CIRCUIT(circ)->p_chan;
+    circpad_event_nonpadding_sent(circ);
   } else {
     log_fn(LOG_PROTOCOL_WARN, LD_OR,
            "Dropping unrecognized inbound cell on origin circuit.");
@@ -721,8 +724,12 @@ relay_send_command_from_edge_,(streamid_t stream_id, circuit_t *circ,
   log_debug(LD_OR,"delivering %d cell %s.", relay_command,
             cell_direction == CELL_DIRECTION_OUT ? "forward" : "backward");
 
-  if (relay_command == RELAY_COMMAND_DROP)
+  if (relay_command == RELAY_COMMAND_DROP) {
     rep_hist_padding_count_write(PADDING_TYPE_DROP);
+    circpad_event_padding_sent(circ);
+  } else {
+    circpad_event_nonpadding_sent(circ);
+  }
 
   /* If we are sending an END cell and this circuit is used for a tunneled
    * directory request, advance its state. */
@@ -1592,6 +1599,14 @@ connection_edge_process_relay_cell(cell_t *cell, circuit_t *circ,
     }
   }
 
+  if (rh.command == RELAY_COMMAND_DROP) {
+    rep_hist_padding_count_read(PADDING_TYPE_DROP);
+    circpad_event_padding_recieved(circ);
+    return 0;
+  } else {
+    circpad_event_nonpadding_recieved(circ);
+  }
+
   /* either conn is NULL, in which case we've got a control cell, or else
    * conn points to the recognized stream. */
 
@@ -1614,10 +1629,6 @@ connection_edge_process_relay_cell(cell_t *cell, circuit_t *circ,
   }
 
   switch (rh.command) {
-    case RELAY_COMMAND_DROP:
-      rep_hist_padding_count_read(PADDING_TYPE_DROP);
-//      log_info(domain,"Got a relay-level padding cell. Dropping.");
-      return 0;
     case RELAY_COMMAND_BEGIN:
     case RELAY_COMMAND_BEGIN_DIR:
       if (layer_hint &&
