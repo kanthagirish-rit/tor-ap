@@ -7,14 +7,19 @@
 HANDLE_IMPL(circpad_machineinfo, circpad_machineinfo_t,);
 
 /* Histogram helpers */
-inline static uint32_t circpad_histogram_bin_ms(circpad_state_t *state,
+
+/**
+ * Calculate the lower bound of a histogram bin. The upper bound
+ * is obtained by calling this function with bin+1, and subtracting 1.
+ */
+inline static uint32_t circpad_histogram_bin_us(circpad_state_t *state,
                                                 int bin)
 {
   if (bin == 0)
     return state->start_usec;
 
   return state->start_usec
-      + state->max_sec*USEC_PER_SEC/(1<<(state->histogram_len-bin));
+      + (state->range_sec*USEC_PER_SEC)/(1<<(state->histogram_len-bin));
 }
 
 inline static const circpad_state_t *circpad_machine_current_state(
@@ -57,7 +62,8 @@ static void circpad_machine_setup_tokens(circpad_machineinfo_t *mi)
   }
 
   /* Try to avoid re-mallocing if we don't really need to */
-  if (!mi->histogram || mi->histogram && mi->histogram_len != state->histogram_len) {
+  if (!mi->histogram || (mi->histogram
+          && mi->histogram_len != state->histogram_len)) {
     tor_free(mi->histogram); // null ok
     mi->histogram = tor_malloc_zero(sizeof(uint16_t)*state->histogram_len);
   }
@@ -92,9 +98,10 @@ inline static uint32_t circpad_machine_sample_delay(circpad_machineinfo_t *mi,
   }
 
   bin_choice = crypto_rand_int(histogram_total);
-  curr_weight = state->histogram[0];
+  curr_weight = histogram[0];
 
-  // XXX: fencepost? what does this do for the last bin?
+  // TODO: This is not constant-time. Pretty sure we don't
+  // really need it to be, though.
   while (curr_weight < bin_choice) {
     tor_assert(i < state->histogram_len);
     curr_weight += histogram[i];
@@ -120,12 +127,56 @@ inline static uint32_t circpad_machine_sample_delay(circpad_machineinfo_t *mi,
 
   tor_assert(i < state->histogram_len - 1);
 
-  // XXX: verify this is right (including i=0)
   bin_start = circpad_histogram_bin_ms(state, i);
   bin_end = circpad_histogram_bin_ms(state, i+1);
 
-  // Sample uniformly between a[i] and b[i]
-  send_padding_packet_at = bin_start + crypto_rand_int(bin_end - bin_start);
+  // Sample uniformly between histogram[i] to histogram[i+1]-1
+  return bin_start + crypto_rand_int(bin_end - bin_start);
+}
+
+/* Remove a token from the bin corresponding to the delta since
+ * last packet, or the next greater bin */
+void circpad_machine_remove_closest_token(circpad_machineinfo_t *mi)
+{
+  uint64_t current_time = monotime_absolute_usec();
+  circpad_state_t *state = circpad_machine_current_state(mi);
+  uint64_t target_bin_us;
+  uint32_t histogram_total = 0;
+
+  target_bin_us = current_time - mi->last_send_packet_time_us;
+
+  mi->last_send_packet_time_us = current_time;
+
+  if (!state->remove_tokens)
+    return;
+
+  tor_assert(mi->histogram && mi->histogram_len == state->histogram_len);
+
+  /* First, check if we came before bin 0. In which case, decrement it. */
+  if (circpad_histogram_bin_us(mi, 0) > target_bin_us) {
+    mi->histogram[0]--;
+  } else {
+    /* Otherwise, we need to remove the token from the bin
+     * whose upper bound is greater than the target */ 
+    for (int i = 1; i <= mi->histogram_len; i++) {
+      if (circpad_histogram_bin_us(mi, i) > target_bin_us) {
+        if (mi->histogram[i-1]) {
+          mi->histogram[i-1]--;
+          break;
+        }
+      }
+    }
+  }
+
+  /* Check if bins empty. Right now, we're operating under the assumption
+   * that this loop is better than the extra space for maintaining a
+   * running total in machineinfo */
+  for (int b = 0; i < state->histogram_len; b++)
+    histogram_total += histogram[b];
+
+  if (histogram_total == 0) {
+    circpad_event_bins_empty(mi);
+  }
 }
 
 static crypt_path_t *cpath_clone_shallow(crypt_path_t *cpath, int hops)
@@ -180,11 +231,22 @@ static void cpath_free_shallow(crypt_path_t *cpath)
   }
 }
 
-int circpad_send_padding_cell_for_callback(circpad_machineinfo_t *mi)
+// XXX: We should make sure that this doesn't mess up circ SENDME windows
+// on the client.. exit should be fine, and the middle shouldn't have a
+// window (though that may cause the code to get confused).
+int circpad_send_padding_cell_for_callback(circpad_machineinfo_t *mi,
+                                           const struct monotime_t *now)
 {
   mi->is_padding_scheduled = 0;
  
-  // XXX: check circuit marks (marked for close, marked unusable, etc)
+  // Make sure circuit didn't close on us
+  if (mi->on_circ->marked_for_close) {
+    // XXX: tor_log at info?
+    return;
+  }
+
+  // TODO: Should we write a utility function to use now instead?
+  mi->last_packet_send_time_us = monotime_absolute_usec(); 
 
   if (CIRCUIT_IS_ORIGIN(mi->on_circ)) {
     crypt_path_t *new_cpath;
@@ -228,7 +290,7 @@ circpad_send_padding_callback(tor_timer_t *timer, void *args,
 
   if (mi && mi->on_circ) {
     assert_circuit_ok(mi->on_circ);
-    circpad_send_padding_cell_for_callback(mi);
+    circpad_send_padding_cell_for_callback(mi, time);
   } else {
     // XXX: This shouldn't happen (represents a handle leak)
     log_fn(LOG_INFO,LD_OR,
@@ -353,7 +415,6 @@ int circpad_event_nonpadding_sent(circuit_t *on_circ)
 {
   for (int i = 0; i < CIRCPAD_MAX_MACHINES && on_circ->padding_info[i];
        i++) {
-    // XXX: Remove tokens here and check bins empty..
     circpad_machine_remove_closest_token(mi);
 
     circpad_machine_transition(on_circ->padding_info[i],
@@ -495,7 +556,7 @@ static void circpad_state_serialize(const circpad_state_t *state,
   }
 
   smartlist_add_asprintf(chunks, " %u %u 0x%x %u 0x%x 0x%x %u %u",
-                         state->start_usec, state->max_sec,
+                         state->start_usec, state->range_sec,
                          state->transition_prev_events, state->prev_state, 
                          state->transition_reschedule_events,
                          state->transition_next_events, state->next_state,

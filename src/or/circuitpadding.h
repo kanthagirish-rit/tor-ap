@@ -49,7 +49,7 @@ typedef struct {
   uint16_t histogram[CIRCPAD_MAX_HISTOGRAM_LEN];
   uint32_t histogram_total;
   uint32_t start_usec;
-  uint16_t max_sec;
+  uint16_t range_sec;
 
   /* This is a bitfield that specifies which direction and types
    * of traffic that cause us to abort our scheduled packet and
@@ -95,10 +95,11 @@ typedef struct {
   /** The circuit for this machine */
   circuit_t *on_circ;
 
-  /* The last time we saw a relevant packet. Monotonic
-   * time in microseconds since system start. This is only set if
-   * the current state has specified token removal. */
-  uint64_t last_packet_time_us;
+  /* The last time we sent a padding or non-padding packet.
+   * Monotonic time in microseconds since system start.
+   * This is only needed if we're removing tokens.
+   */
+  uint64_t last_packet_send_time_us;
 
   /* A copy of the histogram for the current state. NULL if
    * remove_tokens is false for that state */
@@ -148,7 +149,6 @@ int circpad_event_bins_empty(circuit_t *on_circ);
 const circpad_machine_t *circpad_circ_client_machine_new();
 const circpad_machine_t *circpad_circ_server_machine_new();
 
-const circpad_machine_t *circpad_circ_setup_machine_new();
 const circpad_machine_t *circpad_hs_serv_intro_machine_new();
 const circpad_machine_t *circpad_hs_client_intro_machine_new();
 
