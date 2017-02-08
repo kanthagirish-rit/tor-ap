@@ -2,6 +2,7 @@
 /* See LICENSE for licensing information */
 
 #include "or.h"
+#include "circuitpadding.h"
 #include "compat_time.h"
 
 HANDLE_IMPL(circpad_machineinfo, circpad_machineinfo_t,);
@@ -136,6 +137,7 @@ inline static uint32_t circpad_machine_sample_delay(circpad_machineinfo_t *mi,
 
 /* Remove a token from the bin corresponding to the delta since
  * last packet, or the next greater bin */
+// XXX: remove from lower bin?
 void circpad_machine_remove_closest_token(circpad_machineinfo_t *mi)
 {
   uint64_t current_time = monotime_absolute_usec();
@@ -156,8 +158,9 @@ void circpad_machine_remove_closest_token(circpad_machineinfo_t *mi)
   if (circpad_histogram_bin_us(mi, 0) > target_bin_us) {
     mi->histogram[0]--;
   } else {
-    /* Otherwise, we need to remove the token from the bin
-     * whose upper bound is greater than the target */ 
+    /* Otherwise, we need to remove the token from the first bin
+     * whose upper bound is greater than the target, and that
+     * has tokens remaining. */ 
     for (int i = 1; i <= mi->histogram_len; i++) {
       if (circpad_histogram_bin_us(mi, i) > target_bin_us) {
         if (mi->histogram[i-1]) {
@@ -231,9 +234,6 @@ static void cpath_free_shallow(crypt_path_t *cpath)
   }
 }
 
-// XXX: We should make sure that this doesn't mess up circ SENDME windows
-// on the client.. exit should be fine, and the middle shouldn't have a
-// window (though that may cause the code to get confused).
 int circpad_send_padding_cell_for_callback(circpad_machineinfo_t *mi,
                                            const struct monotime_t *now)
 {
@@ -300,20 +300,12 @@ circpad_send_padding_callback(tor_timer_t *timer, void *args,
   total_timers_pending--;
 }
 
-// XXX: return decision?
-int circpad_machine_schedule_padding(circuit_machineinfo_t *mi)
+circpad_decision_t circpad_machine_schedule_padding(circuit_machineinfo_t *mi)
 {
   uint32_t in_us = 0;
   uint64_t now_us = 0;
   int bins_empty = 0;
   tor_assert(mi);
-
-  // Don't pad in either state start or end.
-  if (mi->current_state == CIRCPAD_STATE_START ||
-      mi->current_state == CIRCPAD_STATE_END) {
-    // XXX: return decision
-    return;
-  }
 
   if (mi->is_padding_scheduled) {
     /* Cancel current timer (if any) */
@@ -321,20 +313,25 @@ int circpad_machine_schedule_padding(circuit_machineinfo_t *mi)
     mi->is_padding_scheduled = 0;
   }
 
+  // Don't pad in either state start or end.
+  if (mi->current_state == CIRCPAD_STATE_START ||
+      mi->current_state == CIRCPAD_STATE_END) {
+    return CIRCPAD_NONPADDING_STATE;
+  }
+
   in_us = circpad_machine_sample_delay(mi, &bins_empty);
 
   if (in_us <= 0) {
     mi->is_padding_scheduled = 1;
     circpad_send_padding_cell_for_callback(on_circ);
-    // XXX: decision enum?
     return CIRCPAD_PADDING_SENT;
   }
 
   // Don't schedule if we have infinite delay.
   if (in_us == CIRCPAD_DELAY_INFINITE) {
-    // XXX: Return differently if we transition or not
+    // XXX: Return differently if we transition or not?
     circpad_event_infinity(mi);
-    return;
+    return CIRCPAD_WONTPAD_INFINITY;
   }
 
   timeout.tv_sec = in_us/USEC_PER_SEC;
@@ -361,16 +358,16 @@ int circpad_machine_schedule_padding(circuit_machineinfo_t *mi)
   mi->is_padding_scheduled = 1;
 
   if (bins_empty) {
-    // XXX: Return differently if we transition or not here
+    // XXX: Return differently if we transition or not here?
+    // Hrmm. Padding is still scheduled though...
     circpad_event_bins_empty(mi);
-    return;
+    return CIRCPAD_PADDING_SCHEDULED;
   }
 
   return CIRCPAD_PADDING_SCHEDULED;
 }
 
-// XXX: return indicating transition
-int circpad_machine_transition(circpad_machineinfo_t *mi,
+circpad_decision_t circpad_machine_transition(circpad_machineinfo_t *mi,
                                circpad_transition_t event)
 {
   circpad_state_t *state =
@@ -381,34 +378,40 @@ int circpad_machine_transition(circpad_machineinfo_t *mi,
       mi->current_state = CIRCPAD_STATE_BURST;
 
       circpad_machine_setup_tokens(mi);
-      circpad_machine_schedule_padding(mi);
-      return 1;
+      return circpad_machine_schedule_padding(mi);
     }
-    return 0;
+    return CIRCPAD_WONTPAD_EVENT;
   }
 
   if (state->transition_prev_events & event) {
     mi->current_state = state->prev_state;
 
     circpad_machine_setup_tokens(mi);
-    circpad_machine_schedule_padding(mi);
-    return 1;
+    return circpad_machine_schedule_padding(mi);
   }
 
   if (state->transition_reschedule_events & event) {
-    circpad_machine_schedule_padding(mi);
-    return 1;
+    return circpad_machine_schedule_padding(mi);
   }
  
+  if (state->transition_cancel_events & event) {
+    if (mi->is_padding_scheduled) {
+      /* Cancel current timer (if any) */
+      timer_disable(mi->padding_timer);
+      mi->is_padding_scheduled = 0;
+      return CIRCPAD_WONTPAD_CANCELED;
+    }
+    return CIRCPAD_WONTPAD_EVENT;
+  }
+
   if (state->transition_next_events & event) {
     mi->current_state = state->next_state;
     
     circpad_machine_setup_tokens(mi);
-    circpad_machine_schedule_padding(mi);
-    return 1;
+    return circpad_machine_schedule_padding(mi);
   }
 
-  return 0;
+  return CIRCPAD_WONTPAD_EVENT;
 }
 
 int circpad_event_nonpadding_sent(circuit_t *on_circ)
@@ -498,15 +501,23 @@ const circpad_machine_t *circpad_circ_client_machine_new()
     CIRCPAD_TRANSITION_ON_PADDING_RECV |
     CIRCPAD_TRANSITION_ON_NONPADDING_RECV;
 
+  circ_client_machine.burst.transition_cancel_events =
+    CIRCPAD_TRANSITION_ON_NONPADDING_SENT;
+
   circ_client_machine.burst.transition_next_events =
-      CIRCPAD_TRANSITION_ON_BINS_EMPTY;
+    CIRCPAD_TRANSITION_ON_BINS_EMPTY;
 
   circ_client_machine.burst.next_state =
-      CIRCPAD_STATE_END;
+    CIRCPAD_STATE_END;
 
   circ_client_machine.burst.remove_tokens = 1;
 
-  // XXX: histograms
+  // XXX: Tune this histogram
+  circ_client_machine.burst.histogram_len = 5;
+  circ_client_machine.burst.start_usec = 500;
+  circ_client_machine.burst.range_sec = 1;
+  circ_client_machine.burst.histogram[0] = 6;
+  circ_client_machine.burst.histogram_total = 6;
 }
 
 static circpad_machine_t circ_responder_machine;
@@ -521,15 +532,28 @@ const circpad_machine_t *circpad_circ_responder_machine_new()
   circ_responder_machine.burst.transition_reschedule_events =
     CIRCPAD_TRANSITION_ON_PADDING_RECV;
 
+  circ_responder_machine.burst.transition_cancel_events =
+    CIRCPAD_TRANSITION_ON_NONPADDING_RECV;
+
   circ_client_machine.burst.transition_next_events =
-      CIRCPAD_TRANSITION_ON_BINS_EMPTY;
+    CIRCPAD_TRANSITION_ON_BINS_EMPTY;
 
   circ_client_machine.burst.next_state =
-      CIRCPAD_STATE_END;
+    CIRCPAD_STATE_END;
 
   circ_client_machine.burst.remove_tokens = 1;
 
-  // XXX: Histograms
+  // XXX: Tune this histogram based on circ RTT...
+  // Ugh... That means start_usec needs to be in machineinfo
+  circ_client_machine.burst.histogram_len = 6;
+  circ_client_machine.burst.start_usec = 5000;
+  circ_client_machine.burst.range_sec = 10;
+  circ_client_machine.burst.histogram[0] = 1;
+  circ_client_machine.burst.histogram[1] = 1;
+  circ_client_machine.burst.histogram[2] = 2;
+  circ_client_machine.burst.histogram[3] = 1;
+  circ_client_machine.burst.histogram[4] = 1;
+  circ_client_machine.burst.histogram_total = 6;
 }
 
 static circpad_machine_t circ_hs_service_intro_machine;

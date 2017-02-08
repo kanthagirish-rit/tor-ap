@@ -56,28 +56,33 @@ typedef struct {
    * return to waiting for another event from transition_burst_events.
    */ 
   circpad_transition_t transition_prev_events;
-
-  // XXX: Can we combine this with start?
   circpad_state_t prev_state;
 
   /* This is a bitfield that specifies which direction and types
-   * of traffic that cause us to remain in the burst state: Cancel the
+   * of traffic that cause us to remain in the current state: Cancel the
    * pending padding packet (if any), and schedule another padding
    * packet from our histogram.
    */
   circpad_transition_t transition_reschedule_events;
 
   /* This is a bitfield that specifies which direction and types
+   * of traffic that cause us to remain in the current state. Cancel the
+   * pending padding packet (if any), and then await the next event.
+   */
+  circpad_transition_t transition_cancel_events;
+
+  /* This is a bitfield that specifies which direction and types
    * of traffic that cause us to transition to the Gap (or burst)
    * state. */
   circpad_transition_t transition_next_events;
-
-  // XXX: Can we combine this with start?
   circpad_state_t next_state;
 
   /* If true, remove tokens from the histogram upon padding and
    * non-padding activity. */
+  // XXX: Different removal types? (before, after, lowest, highest?)
   uint8_t remove_tokens;
+
+  // XXX: 
 } circpad_state_t;
 
 /**
@@ -97,9 +102,14 @@ typedef struct {
 
   /* The last time we sent a padding or non-padding packet.
    * Monotonic time in microseconds since system start.
-   * This is only needed if we're removing tokens.
    */
   uint64_t last_packet_send_time_us;
+
+  /* The last time we recieved a padding or non-padding packet.
+   * Monotonic time in microseconds since system start.
+   * XXX: Use recv-send as a start_usec on histogram?
+   */
+  uint64_t last_packet_recv_time_us;
 
   /* A copy of the histogram for the current state. NULL if
    * remove_tokens is false for that state */
@@ -133,6 +143,13 @@ typedef struct {
 
   uint8_t is_inititalized : 1;
 } circpad_machine_t;
+
+typedef enum {
+  CIRCPAD_WONTPAD_EVENT = 0, 
+  CIRCPAD_NONPADDING_STATE,
+  CIRCPAD_WONTPAD_INFINITY,
+  CIRCPAD_PADDING_SENT
+} circpad_decision_t;
 
 circpad_machine_t *circpad_new_adaptive_padding_machine();
 
