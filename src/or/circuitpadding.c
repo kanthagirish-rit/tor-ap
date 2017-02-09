@@ -3,10 +3,14 @@
 
 #include "or.h"
 #include "circuitpadding.h"
+#include "circuitlist.h"
+#include "relay.h"
 #include "compat_time.h"
 #include "util.h"
 
 HANDLE_IMPL(circpad_machineinfo, circpad_machineinfo_t,);
+
+#define USEC_PER_SEC (1000000)
 
 /* Histogram helpers */
 inline static const circpad_state_t *circpad_machine_current_state(
@@ -14,6 +18,7 @@ inline static const circpad_state_t *circpad_machine_current_state(
 {
   switch (machine->current_state) {
     case CIRCPAD_STATE_START:
+    case CIRCPAD_STATE_END:
       return NULL;
 
     case CIRCPAD_STATE_BURST:
@@ -35,7 +40,7 @@ inline static const circpad_state_t *circpad_machine_current_state(
 inline static uint32_t circpad_histogram_bin_us(circpad_machineinfo_t *mi,
                                                 int bin)
 {
-  circpad_state_t *state = circpad_machine_current_state(mi);
+  const circpad_state_t *state = circpad_machine_current_state(mi);
   uint32_t start_usec;
 
   if (state->use_rtt_estimate)
@@ -57,7 +62,7 @@ inline static uint32_t circpad_histogram_bin_us(circpad_machineinfo_t *mi,
  */
 static void circpad_machine_setup_tokens(circpad_machineinfo_t *mi)
 {
-  circpad_state_t *state = circpad_machine_current_state(mi);
+  const circpad_state_t *state = circpad_machine_current_state(mi);
 
   /* If this state doesn't exist, or doesn't have token removal,
    * free any previous state's histogram, and bail */
@@ -84,7 +89,7 @@ static void circpad_machine_setup_tokens(circpad_machineinfo_t *mi)
 inline static uint32_t circpad_machine_sample_delay(circpad_machineinfo_t *mi,
                                                     int *empty_hint)
 {
-  circpad_state_t *state = circpad_machine_current_state(mi);
+  const circpad_state_t *state = circpad_machine_current_state(mi);
   const uint16_t *histogram = NULL;
   int i = 0;
   uint32_t curr_weight;
@@ -125,7 +130,7 @@ inline static uint32_t circpad_machine_sample_delay(circpad_machineinfo_t *mi,
     mi->histogram[i]--;
   }
 
-  if (curr_weight == total_weight) {
+  if (curr_weight == histogram_total) {
     *empty_hint = 1;
   } else {
     *empty_hint = 0;
@@ -149,13 +154,13 @@ inline static uint32_t circpad_machine_sample_delay(circpad_machineinfo_t *mi,
 void circpad_machine_remove_closest_token(circpad_machineinfo_t *mi)
 {
   uint64_t current_time = monotime_absolute_usec();
-  circpad_state_t *state = circpad_machine_current_state(mi);
+  const circpad_state_t *state = circpad_machine_current_state(mi);
   uint64_t target_bin_us;
   uint32_t histogram_total = 0;
 
-  target_bin_us = current_time - mi->last_send_packet_time_us;
+  target_bin_us = current_time - mi->last_sent_packet_time_us;
 
-  mi->last_send_packet_time_us = current_time;
+  mi->last_sent_packet_time_us = current_time;
 
   if (!state->remove_tokens)
     return;
@@ -182,8 +187,8 @@ void circpad_machine_remove_closest_token(circpad_machineinfo_t *mi)
   /* Check if bins empty. Right now, we're operating under the assumption
    * that this loop is better than the extra space for maintaining a
    * running total in machineinfo */
-  for (int b = 0; i < state->histogram_len; b++)
-    histogram_total += histogram[b];
+  for (int b = 0; b < state->histogram_len; b++)
+    histogram_total += mi->histogram[b];
 
   if (histogram_total == 0) {
     circpad_event_bins_empty(mi);
@@ -218,7 +223,7 @@ static crypt_path_t *cpath_clone_shallow(crypt_path_t *cpath, int hops)
   new_curr->next = new_head;
   new_head->prev = new_curr;
 
-  if (old_iter == cpath) {
+  if (orig_iter == cpath) {
     // XXX: tor_bug log (short cpath)
   }
 
@@ -242,8 +247,7 @@ static void cpath_free_shallow(crypt_path_t *cpath)
   }
 }
 
-int circpad_send_padding_cell_for_callback(circpad_machineinfo_t *mi,
-                                           const struct monotime_t *now)
+void circpad_send_padding_cell_for_callback(circpad_machineinfo_t *mi)
 {
   mi->is_padding_scheduled = 0;
  
@@ -254,19 +258,19 @@ int circpad_send_padding_cell_for_callback(circpad_machineinfo_t *mi,
   }
 
   // TODO: Should we write a utility function to use now instead?
-  mi->last_send_packet_send_us = monotime_absolute_usec(); 
+  mi->last_sent_packet_time_us = monotime_absolute_usec(); 
 
   if (CIRCUIT_IS_ORIGIN(mi->on_circ)) {
     crypt_path_t *new_cpath;
 
     // Check that we have at least a 2 hop circuit
-    if (circuit_get_cpath_len(TO_ORIGIN_CIRC(mi->on_circ)) < 2) {
+    if (circuit_get_cpath_len(TO_ORIGIN_CIRCUIT(mi->on_circ)) < 2) {
       // XXX: tor_log
       return;
     }
 
     /* Prepare a cpath to get us to the middle hop */
-    new_cpath = cpath_clone_shallow(TO_ORIGIN_CIRC(mi->on_circ)->cpath, 2);
+    new_cpath = cpath_clone_shallow(TO_ORIGIN_CIRCUIT(mi->on_circ)->cpath, 2);
 
     // Ensure that our cpath is not short, and we have both hops are open
     if (!new_cpath || new_cpath == new_cpath->next ||
@@ -278,13 +282,13 @@ int circpad_send_padding_cell_for_callback(circpad_machineinfo_t *mi,
     }
 
     /* Send the drop command to the second hop */
-    relay_send_command_from_edge(0, mi->on_circ, RELAY_DROP, NULL, 0, new_cpath);
+    relay_send_command_from_edge(0, mi->on_circ, RELAY_COMMAND_DROP, NULL, 0, new_cpath);
 
     cpath_free_shallow(new_cpath);
   } else {
     // If we're a non-origin circ, we can just send from here as if we're the
     // edge.
-    relay_send_command_from_edge(0, mi->on_circ, RELAY_DROP, NULL, 0, NULL);
+    relay_send_command_from_edge(0, mi->on_circ, RELAY_COMMAND_DROP, NULL, 0, NULL);
   }
 }
 
@@ -298,21 +302,23 @@ circpad_send_padding_callback(tor_timer_t *timer, void *args,
 
   if (mi && mi->on_circ) {
     assert_circuit_ok(mi->on_circ);
-    circpad_send_padding_cell_for_callback(mi, time);
+    circpad_send_padding_cell_for_callback(mi);
   } else {
     // XXX: This shouldn't happen (represents a handle leak)
     log_fn(LOG_INFO,LD_OR,
             "Circuit closed while waiting for timer.");
   }
 
-  total_timers_pending--;
+  // XXX: Unify this counter with channelpadding somehow for rephist stats
+  //total_timers_pending--;
 }
 
-circpad_decision_t circpad_machine_schedule_padding(circuit_machineinfo_t *mi)
+circpad_decision_t circpad_machine_schedule_padding(circpad_machineinfo_t *mi)
 {
   uint32_t in_us = 0;
   uint64_t now_us = 0;
   int bins_empty = 0;
+  struct timeval timeout;
   tor_assert(mi);
 
   if (mi->is_padding_scheduled) {
@@ -331,7 +337,7 @@ circpad_decision_t circpad_machine_schedule_padding(circuit_machineinfo_t *mi)
 
   if (in_us <= 0) {
     mi->is_padding_scheduled = 1;
-    circpad_send_padding_cell_for_callback(on_circ);
+    circpad_send_padding_cell_for_callback(mi->on_circ);
     return CIRCPAD_PADDING_SENT;
   }
 
@@ -361,7 +367,8 @@ circpad_decision_t circpad_machine_schedule_padding(circuit_machineinfo_t *mi)
   }
   timer_schedule(mi->padding_timer, &timeout);
 
-  rep_hist_padding_count_timers(++total_timers_pending);
+  // XXX: Unify with channelpadding counter
+  //rep_hist_padding_count_timers(++total_timers_pending);
 
   mi->is_padding_scheduled = 1;
 
@@ -427,14 +434,14 @@ void circpad_event_nonpadding_sent(circuit_t *on_circ)
   for (int i = 0; i < CIRCPAD_MAX_MACHINES && on_circ->padding_info[i];
        i++) {
 
-    circpad_machine_remove_closest_token(mi);
+    circpad_machine_remove_closest_token(on_circ->padding_info[i]);
 
     circpad_machine_transition(on_circ->padding_info[i],
                                CIRCPAD_TRANSITION_ON_NONPADDING_SENT);
 
     /* Round trip time estimate (only valid for relay-side machines) */
     if (on_circ->padding_info[i]->last_rtt_packet_time_us) {
-      uint64_t rtt_time = monotime_get_absolute_usec() -
+      uint64_t rtt_time = monotime_absolute_usec() -
           on_circ->padding_info[i]->last_rtt_packet_time_us;
 
       /* Use INT32_MAX to ensure the addition doesn't overflow */
@@ -462,7 +469,7 @@ void circpad_event_nonpadding_recieved(circuit_t *on_circ)
                                CIRCPAD_TRANSITION_ON_NONPADDING_RECV);
 
     on_circ->padding_info[i]->last_rtt_packet_time_us
-        = monotime_get_absolute_usec();
+        = monotime_absolute_usec();
   }
 }
 
@@ -484,7 +491,7 @@ void circpad_event_padding_recieved(circuit_t *on_circ)
   }
 }
 
-void circpad_event_infinity(cirpad_machineinfo_t *mi)
+void circpad_event_infinity(circpad_machineinfo_t *mi)
 {
   circpad_machine_transition(mi, CIRCPAD_TRANSITION_ON_INFINITY);
 }
@@ -521,7 +528,7 @@ circpad_machineinfo_t *circpad_machineinfo_new(int machine_index)
 
 /* Machines for various usecases */
 static circpad_machine_t circ_client_machine;
-const circpad_machine_t *circpad_circ_client_machine_new()
+const circpad_machine_t *circpad_circ_client_machine_new(void)
 {
   if (circ_client_machine.is_initialized)
     return &circ_client_machine;
@@ -557,7 +564,7 @@ const circpad_machine_t *circpad_circ_client_machine_new()
 }
 
 static circpad_machine_t circ_responder_machine;
-const circpad_machine_t *circpad_circ_responder_machine_new()
+const circpad_machine_t *circpad_circ_responder_machine_new(void)
 {
   if (circ_responder_machine.is_initialized)
     return &circ_responder_machine;

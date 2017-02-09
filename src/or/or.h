@@ -83,7 +83,6 @@
 #include "util_format.h"
 #include "hs_circuitmap.h"
 #include "circuitpadding.h"
-#include "handles.h"
 
 /* These signals are defined to help handle_control_signal work.
  */
@@ -3092,7 +3091,7 @@ typedef struct circuit_t {
 
   /* Adaptive Padding machine info for above machines */
   circpad_machineinfo_t *padding_info[CIRCPAD_MAX_MACHINES];
-  circpad_machineinfo_handles_t *padding_handles[CIRCPAD_MAX_MACHINES];
+  circpad_machineinfo_handle_t *padding_handles[CIRCPAD_MAX_MACHINES];
 
 } circuit_t;
 

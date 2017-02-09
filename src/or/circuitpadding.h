@@ -1,17 +1,21 @@
-/* Copyright (c) 2001 Matej Pfajfar.
- * Copyright (c) 2001-2004, Roger Dingledine.
- * Copyright (c) 2004-2006, Roger Dingledine, Nick Mathewson.
- * Copyright (c) 2007-2015, The Tor Project, Inc. */
+/* 
+ * Copyright (c) 2017, The Tor Project, Inc. */
 /* See LICENSE for licensing information */
 
 /**
- * \file circuitbuild.h
- * \brief Header file for circuitbuild.c.
+ * \file circuitpadding.h
+ * \brief Header file for circuitpadding.c.
  **/
-#ifndef TOR_CHANNELPADDING_H
-#define TOR_CHANNELPADDING_H
+#ifndef TOR_CIRCUITPADDING_H
+#define TOR_CIRCUITPADDING_H
 
 #include "circpad_negotiation.h"
+#include "handles.h"
+#include "timers.h"
+
+
+struct circuit_t;
+typedef struct circuit_t circuit_t;
 
 typedef enum {
   CIRCPAD_STATE_START = 0,
@@ -56,7 +60,7 @@ typedef struct {
    * return to waiting for another event from transition_burst_events.
    */ 
   circpad_transition_t transition_prev_events;
-  circpad_state_t prev_state;
+  circpad_statenum_t prev_state;
 
   /* This is a bitfield that specifies which direction and types
    * of traffic that cause us to remain in the current state: Cancel the
@@ -75,7 +79,7 @@ typedef struct {
    * of traffic that cause us to transition to the Gap (or burst)
    * state. */
   circpad_transition_t transition_next_events;
-  circpad_state_t next_state;
+  circpad_statenum_t next_state;
 
   /* If true, estimate the RTT and use that for the histogram base instead of
    * start_usec.
@@ -88,8 +92,6 @@ typedef struct {
    * non-padding activity. */
   // XXX: Different removal types? (before, after, lowest, highest?)
   uint8_t remove_tokens;
-
-  // XXX: 
 } circpad_state_t;
 
 /**
@@ -98,7 +100,7 @@ typedef struct {
  * it exists per-circuit, where as the machines themselves are global.
  * This separation is done to conserve space in the circuit structure.
  */
-typedef struct {
+typedef struct circpad_machineinfo_t {
   HANDLE_ENTRY(circpad_machineinfo, circpad_machineinfo_t);
 
   /** The callback pointer for the padding callbacks */
@@ -110,7 +112,7 @@ typedef struct {
   /* The last time we sent a padding or non-padding packet.
    * Monotonic time in microseconds since system start.
    */
-  uint64_t last_send_packet_time_us;
+  uint64_t last_sent_packet_time_us;
 
   /* The last time we got an event relevant to estimating
    * the RTT. Monotonic time in microseconds since system
@@ -126,7 +128,7 @@ typedef struct {
   uint8_t histogram_len;
 
   /** What state is this machine in? */
-  circpad_state_t current_state;
+  circpad_statenum_t current_state;
 
 #define CIRCPAD_MAX_MACHINES    (2)
   /** Which padding machine index was this for.
@@ -150,35 +152,35 @@ typedef struct {
   circpad_state_t burst;
   circpad_state_t gap;
 
-  uint8_t is_inititalized : 1;
+  uint8_t is_initialized : 1;
 } circpad_machine_t;
 
 typedef enum {
   CIRCPAD_WONTPAD_EVENT = 0, 
+  CIRCPAD_WONTPAD_CANCELED, 
   CIRCPAD_NONPADDING_STATE,
   CIRCPAD_WONTPAD_INFINITY,
+  CIRCPAD_PADDING_SCHEDULED,
   CIRCPAD_PADDING_SENT
 } circpad_decision_t;
 
-circpad_machine_t *circpad_new_adaptive_padding_machine();
+void circpad_event_nonpadding_sent(circuit_t *on_circ);
+void circpad_event_nonpadding_recieved(circuit_t *on_circ);
 
-int circpad_event_nonpadding_sent(circuit_t *on_circ);
-int circpad_event_nonpadding_recieved(circuit_t *on_circ);
+void circpad_event_padding_sent(circuit_t *on_circ);
+void circpad_event_padding_recieved(circuit_t *on_circ);
 
-int circpad_event_padding_sent(circuit_t *on_circ);
-int circpad_event_padding_recieved(circuit_t *on_circ);
-
-int circpad_event_infinity(circuit_t *on_circ);
-int circpad_event_bins_empty(circuit_t *on_circ);
+void circpad_event_infinity(circpad_machineinfo_t *mi);
+void circpad_event_bins_empty(circpad_machineinfo_t *mi);
 
 /* Machines for various usecases */
-const circpad_machine_t *circpad_circ_client_machine_new();
-const circpad_machine_t *circpad_circ_server_machine_new();
+const circpad_machine_t *circpad_circ_client_machine_new(void);
+const circpad_machine_t *circpad_circ_server_machine_new(void);
 
-const circpad_machine_t *circpad_hs_serv_intro_machine_new();
-const circpad_machine_t *circpad_hs_client_intro_machine_new();
+const circpad_machine_t *circpad_hs_serv_intro_machine_new(void);
+const circpad_machine_t *circpad_hs_client_intro_machine_new(void);
 
-const circpad_machine_t *circpad_adaptive_padding_machine_new();
-const circpad_machine_t *circpad_hs_serv_rend_machine_new();
+const circpad_machine_t *circpad_adaptive_padding_machine_new(void);
+const circpad_machine_t *circpad_hs_serv_rend_machine_new(void);
 
 #endif
