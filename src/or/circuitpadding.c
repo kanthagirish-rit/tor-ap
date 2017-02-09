@@ -4,25 +4,11 @@
 #include "or.h"
 #include "circuitpadding.h"
 #include "compat_time.h"
+#include "util.h"
 
 HANDLE_IMPL(circpad_machineinfo, circpad_machineinfo_t,);
 
 /* Histogram helpers */
-
-/**
- * Calculate the lower bound of a histogram bin. The upper bound
- * is obtained by calling this function with bin+1, and subtracting 1.
- */
-inline static uint32_t circpad_histogram_bin_us(circpad_state_t *state,
-                                                int bin)
-{
-  if (bin == 0)
-    return state->start_usec;
-
-  return state->start_usec
-      + (state->range_sec*USEC_PER_SEC)/(1<<(state->histogram_len-bin));
-}
-
 inline static const circpad_state_t *circpad_machine_current_state(
                                       circpad_machineinfo_t *machine)
 {
@@ -40,6 +26,28 @@ inline static const circpad_state_t *circpad_machine_current_state(
 
   // XXX: tor_bug?
   tor_assert(0);
+}
+
+/**
+ * Calculate the lower bound of a histogram bin. The upper bound
+ * is obtained by calling this function with bin+1, and subtracting 1.
+ */
+inline static uint32_t circpad_histogram_bin_us(circpad_machineinfo_t *mi,
+                                                int bin)
+{
+  circpad_state_t *state = circpad_machine_current_state(mi);
+  uint32_t start_usec;
+
+  if (state->use_rtt_estimate)
+    start_usec = mi->rtt_estimate;
+  else
+    start_usec = state->start_usec;
+
+  if (bin == 0)
+    return start_usec;
+
+  return start_usec
+      + (state->range_sec*USEC_PER_SEC)/(1<<(state->histogram_len-bin));
 }
 
 /**
@@ -128,8 +136,8 @@ inline static uint32_t circpad_machine_sample_delay(circpad_machineinfo_t *mi,
 
   tor_assert(i < state->histogram_len - 1);
 
-  bin_start = circpad_histogram_bin_ms(state, i);
-  bin_end = circpad_histogram_bin_ms(state, i+1);
+  bin_start = circpad_histogram_bin_us(mi, i);
+  bin_end = circpad_histogram_bin_us(mi, i+1);
 
   // Sample uniformly between histogram[i] to histogram[i+1]-1
   return bin_start + crypto_rand_int(bin_end - bin_start);
@@ -137,7 +145,7 @@ inline static uint32_t circpad_machine_sample_delay(circpad_machineinfo_t *mi,
 
 /* Remove a token from the bin corresponding to the delta since
  * last packet, or the next greater bin */
-// XXX: remove from lower bin?
+// TODO: remove from lower bin? lowest bin? closest bin?
 void circpad_machine_remove_closest_token(circpad_machineinfo_t *mi)
 {
   uint64_t current_time = monotime_absolute_usec();
@@ -246,7 +254,7 @@ int circpad_send_padding_cell_for_callback(circpad_machineinfo_t *mi,
   }
 
   // TODO: Should we write a utility function to use now instead?
-  mi->last_packet_send_time_us = monotime_absolute_usec(); 
+  mi->last_send_packet_send_us = monotime_absolute_usec(); 
 
   if (CIRCUIT_IS_ORIGIN(mi->on_circ)) {
     crypt_path_t *new_cpath;
@@ -414,27 +422,51 @@ circpad_decision_t circpad_machine_transition(circpad_machineinfo_t *mi,
   return CIRCPAD_WONTPAD_EVENT;
 }
 
-int circpad_event_nonpadding_sent(circuit_t *on_circ)
+void circpad_event_nonpadding_sent(circuit_t *on_circ)
 {
   for (int i = 0; i < CIRCPAD_MAX_MACHINES && on_circ->padding_info[i];
        i++) {
+
     circpad_machine_remove_closest_token(mi);
 
     circpad_machine_transition(on_circ->padding_info[i],
-                               CIRCPAD_TRANSITION_ON_NONPADDING_SENT); 
+                               CIRCPAD_TRANSITION_ON_NONPADDING_SENT);
+
+    /* Round trip time estimate (only valid for relay-side machines) */
+    if (on_circ->padding_info[i]->last_rtt_packet_time_us) {
+      uint64_t rtt_time = monotime_get_absolute_usec() -
+          on_circ->padding_info[i]->last_rtt_packet_time_us;
+
+      /* Use INT32_MAX to ensure the addition doesn't overflow */
+      if (rtt_time >= INT32_MAX) {
+        // XXX: tor_log
+        continue;
+      }
+
+      /* Cheap EWMA */
+      if (on_circ->padding_info[i]->rtt_estimate) {
+        on_circ->padding_info[i]->rtt_estimate += (uint32_t)rtt_time;
+        on_circ->padding_info[i]->rtt_estimate /= 2;
+      } else {
+        on_circ->padding_info[i]->rtt_estimate = (uint32_t)rtt_time;
+      }
+    }
   }
 }
 
-int circpad_event_nonpadding_recieved(circuit_t *on_circ)
+void circpad_event_nonpadding_recieved(circuit_t *on_circ)
 {
   for (int i = 0; i < CIRCPAD_MAX_MACHINES && on_circ->padding_info[i];
       i++) {
     circpad_machine_transition(on_circ->padding_info[i],
-                             CIRCPAD_TRANSITION_ON_NONPADDING_RECV); 
+                               CIRCPAD_TRANSITION_ON_NONPADDING_RECV);
+
+    on_circ->padding_info[i]->last_rtt_packet_time_us
+        = monotime_get_absolute_usec();
   }
 }
 
-int circpad_event_padding_sent(circuit_t *on_circ)
+void circpad_event_padding_sent(circuit_t *on_circ)
 {
   for (int i = 0; i < CIRCPAD_MAX_MACHINES && on_circ->padding_info[i];
        i++) {
@@ -443,7 +475,7 @@ int circpad_event_padding_sent(circuit_t *on_circ)
   }
 }
 
-int circpad_event_padding_recieved(circuit_t *on_circ)
+void circpad_event_padding_recieved(circuit_t *on_circ)
 {
   for(int i = 0; i < CIRCPAD_MAX_MACHINES && on_circ->padding_info[i];
       i++) {
@@ -452,19 +484,19 @@ int circpad_event_padding_recieved(circuit_t *on_circ)
   }
 }
 
-int circpad_event_infinity(cirpad_machineinfo_t *mi)
+void circpad_event_infinity(cirpad_machineinfo_t *mi)
 {
   circpad_machine_transition(mi, CIRCPAD_TRANSITION_ON_INFINITY);
 }
 
-int circpad_event_bins_empty(circpad_machineinfo_t *mi)
+void circpad_event_bins_empty(circpad_machineinfo_t *mi)
 {
   if (!circpad_machine_transition(mi, CIRCPAD_TRANSITION_ON_BINS_EMPTY)) {
     circpad_machine_setup_tokens(mi);
   }
 }
 
-int circpad_machines_free(circuit_t *circ)
+void circpad_machines_free(circuit_t *circ)
 {
   for (int i = 0; i < CIRCPAD_MAX_MACHINES; i++) {
     circpad_machineinfo_handle_free(circ->padding_handles[i]);
@@ -512,12 +544,16 @@ const circpad_machine_t *circpad_circ_client_machine_new()
 
   circ_client_machine.burst.remove_tokens = 1;
 
-  // XXX: Tune this histogram
+  // FIXME: Tune this histogram
   circ_client_machine.burst.histogram_len = 5;
   circ_client_machine.burst.start_usec = 500;
   circ_client_machine.burst.range_sec = 1;
   circ_client_machine.burst.histogram[0] = 6;
   circ_client_machine.burst.histogram_total = 6;
+
+  circ_client_machine.is_initialized = 1;
+
+  return &circ_client_machine;
 }
 
 static circpad_machine_t circ_responder_machine;
@@ -535,25 +571,28 @@ const circpad_machine_t *circpad_circ_responder_machine_new()
   circ_responder_machine.burst.transition_cancel_events =
     CIRCPAD_TRANSITION_ON_NONPADDING_RECV;
 
-  circ_client_machine.burst.transition_next_events =
+  circ_responder_machine.burst.transition_next_events =
     CIRCPAD_TRANSITION_ON_BINS_EMPTY;
 
-  circ_client_machine.burst.next_state =
+  circ_responder_machine.burst.next_state =
     CIRCPAD_STATE_END;
 
-  circ_client_machine.burst.remove_tokens = 1;
+  circ_responder_machine.burst.remove_tokens = 1;
 
-  // XXX: Tune this histogram based on circ RTT...
-  // Ugh... That means start_usec needs to be in machineinfo
-  circ_client_machine.burst.histogram_len = 6;
-  circ_client_machine.burst.start_usec = 5000;
-  circ_client_machine.burst.range_sec = 10;
-  circ_client_machine.burst.histogram[0] = 1;
-  circ_client_machine.burst.histogram[1] = 1;
-  circ_client_machine.burst.histogram[2] = 2;
-  circ_client_machine.burst.histogram[3] = 1;
-  circ_client_machine.burst.histogram[4] = 1;
-  circ_client_machine.burst.histogram_total = 6;
+  circ_responder_machine.burst.use_rtt_estimate = 1;
+  circ_responder_machine.burst.histogram_len = 6;
+  circ_responder_machine.burst.start_usec = 5000;
+  circ_responder_machine.burst.range_sec = 10;
+  circ_responder_machine.burst.histogram[0] = 0;
+  circ_responder_machine.burst.histogram[1] = 1;
+  circ_responder_machine.burst.histogram[2] = 2;
+  circ_responder_machine.burst.histogram[3] = 2;
+  circ_responder_machine.burst.histogram[4] = 1;
+  circ_responder_machine.burst.histogram_total = 6;
+
+  circ_responder_machine.is_initialized = 1;
+
+  return &circ_responder_machine;
 }
 
 static circpad_machine_t circ_hs_service_intro_machine;
@@ -611,5 +650,3 @@ const circpad_machine_t *circpad_string_to_machine(const char *string)
 {
   
 }
-
-

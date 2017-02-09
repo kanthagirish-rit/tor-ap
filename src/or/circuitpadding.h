@@ -77,6 +77,13 @@ typedef struct {
   circpad_transition_t transition_next_events;
   circpad_state_t next_state;
 
+  /* If true, estimate the RTT and use that for the histogram base instead of
+   * start_usec.
+   *
+   * XXX: Right now this is only supported for relay-side state machines. 
+   */
+  uint8_t use_rtt_estimate;
+
   /* If true, remove tokens from the histogram upon padding and
    * non-padding activity. */
   // XXX: Different removal types? (before, after, lowest, highest?)
@@ -103,13 +110,15 @@ typedef struct {
   /* The last time we sent a padding or non-padding packet.
    * Monotonic time in microseconds since system start.
    */
-  uint64_t last_packet_send_time_us;
+  uint64_t last_send_packet_time_us;
 
-  /* The last time we recieved a padding or non-padding packet.
-   * Monotonic time in microseconds since system start.
-   * XXX: Use recv-send as a start_usec on histogram?
+  /* The last time we got an event relevant to estimating
+   * the RTT. Monotonic time in microseconds since system
+   * start.
    */
-  uint64_t last_packet_recv_time_us;
+  uint64_t last_rtt_packet_time_us;
+
+  uint32_t rtt_estimate;
 
   /* A copy of the histogram for the current state. NULL if
    * remove_tokens is false for that state */
