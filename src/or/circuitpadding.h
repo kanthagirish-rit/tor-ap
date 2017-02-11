@@ -165,22 +165,27 @@ typedef enum {
 } circpad_decision_t;
 
 void circpad_event_nonpadding_sent(circuit_t *on_circ);
-void circpad_event_nonpadding_recieved(circuit_t *on_circ);
+void circpad_event_nonpadding_received(circuit_t *on_circ);
 
 void circpad_event_padding_sent(circuit_t *on_circ);
-void circpad_event_padding_recieved(circuit_t *on_circ);
+void circpad_event_padding_received(circuit_t *on_circ);
 
 void circpad_event_infinity(circpad_machineinfo_t *mi);
 void circpad_event_bins_empty(circpad_machineinfo_t *mi);
 
 /* Machines for various usecases */
-const circpad_machine_t *circpad_circ_client_machine_new(void);
-const circpad_machine_t *circpad_circ_server_machine_new(void);
+void circpad_circ_client_machine_setup(circuit_t *);
+void circpad_circ_responder_machine_setup(circuit_t *on_circ);
 
-const circpad_machine_t *circpad_hs_serv_intro_machine_new(void);
-const circpad_machine_t *circpad_hs_client_intro_machine_new(void);
+void circpad_hs_serv_intro_machine_setup(circuit_t *);
+void circpad_hs_client_intro_machine_setup(circuit_t *);
 
-const circpad_machine_t *circpad_adaptive_padding_machine_new(void);
-const circpad_machine_t *circpad_hs_serv_rend_machine_new(void);
+void circpad_adaptive_padding_machine_setup(circuit_t *);
+void circpad_hs_serv_rend_machine_setup(circuit_t *);
+
+void circpad_machines_free(circuit_t *circ);
+
+char *circpad_machine_to_string(const circpad_machine_t *machine);
+const circpad_machine_t *circpad_string_to_machine(const char *str);
 
 #endif

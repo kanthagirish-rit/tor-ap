@@ -7,11 +7,19 @@
 #include "relay.h"
 #include "compat_time.h"
 #include "util.h"
+#include "relay.h"
 
 HANDLE_IMPL(circpad_machineinfo, circpad_machineinfo_t,);
 
 #define USEC_PER_SEC (1000000)
 
+void circpad_machine_remove_closest_token(circpad_machineinfo_t *mi);
+void circpad_send_padding_cell_for_callback(circpad_machineinfo_t *mi);
+circpad_decision_t circpad_machine_schedule_padding(circpad_machineinfo_t *mi);
+circpad_decision_t circpad_machine_transition(circpad_machineinfo_t *mi,
+                                              circpad_transition_t event);
+circpad_machineinfo_t *circpad_machineinfo_new(circuit_t *on_circ, int machine_index);
+    
 /* Histogram helpers */
 inline static const circpad_state_t *circpad_machine_current_state(
                                       circpad_machineinfo_t *machine)
@@ -26,7 +34,6 @@ inline static const circpad_state_t *circpad_machine_current_state(
 
     case CIRCPAD_STATE_GAP:
       return &CIRCPAD_GET_MACHINE(machine)->gap;
-
   }
 
   // XXX: tor_bug?
@@ -316,7 +323,6 @@ circpad_send_padding_callback(tor_timer_t *timer, void *args,
 circpad_decision_t circpad_machine_schedule_padding(circpad_machineinfo_t *mi)
 {
   uint32_t in_us = 0;
-  uint64_t now_us = 0;
   int bins_empty = 0;
   struct timeval timeout;
   tor_assert(mi);
@@ -337,7 +343,7 @@ circpad_decision_t circpad_machine_schedule_padding(circpad_machineinfo_t *mi)
 
   if (in_us <= 0) {
     mi->is_padding_scheduled = 1;
-    circpad_send_padding_cell_for_callback(mi->on_circ);
+    circpad_send_padding_cell_for_callback(mi);
     return CIRCPAD_PADDING_SENT;
   }
 
@@ -385,7 +391,7 @@ circpad_decision_t circpad_machine_schedule_padding(circpad_machineinfo_t *mi)
 circpad_decision_t circpad_machine_transition(circpad_machineinfo_t *mi,
                                circpad_transition_t event)
 {
-  circpad_state_t *state =
+  const circpad_state_t *state =
       circpad_machine_current_state(mi);
 
   if (!state) {
@@ -461,7 +467,7 @@ void circpad_event_nonpadding_sent(circuit_t *on_circ)
   }
 }
 
-void circpad_event_nonpadding_recieved(circuit_t *on_circ)
+void circpad_event_nonpadding_received(circuit_t *on_circ)
 {
   for (int i = 0; i < CIRCPAD_MAX_MACHINES && on_circ->padding_info[i];
       i++) {
@@ -482,7 +488,7 @@ void circpad_event_padding_sent(circuit_t *on_circ)
   }
 }
 
-void circpad_event_padding_recieved(circuit_t *on_circ)
+void circpad_event_padding_received(circuit_t *on_circ)
 {
   for(int i = 0; i < CIRCPAD_MAX_MACHINES && on_circ->padding_info[i];
       i++) {
@@ -517,21 +523,27 @@ void circpad_machines_free(circuit_t *circ)
   }
 }
 
-circpad_machineinfo_t *circpad_machineinfo_new(int machine_index)
+circpad_machineinfo_t *circpad_machineinfo_new(circuit_t *on_circ, int machine_index)
 {
   circpad_machineinfo_t *mi = tor_malloc_zero(sizeof(circpad_machineinfo_t));
-
   mi->machine_index = machine_index;
+  mi->on_circ = on_circ;
 
   return mi;
 }
 
 /* Machines for various usecases */
 static circpad_machine_t circ_client_machine;
-const circpad_machine_t *circpad_circ_client_machine_new(void)
+void circpad_circ_client_machine_setup(circuit_t *on_circ)
 {
+  /* Free the old machines (if any) */
+  circpad_machines_free(on_circ);
+
+  on_circ->padding_machine[0] = &circ_client_machine;
+  on_circ->padding_info[0] = circpad_machineinfo_new(on_circ, 0);
+
   if (circ_client_machine.is_initialized)
-    return &circ_client_machine;
+    return;
 
   circ_client_machine.transition_burst_events =
     CIRCPAD_TRANSITION_ON_NONPADDING_RECV;
@@ -560,14 +572,20 @@ const circpad_machine_t *circpad_circ_client_machine_new(void)
 
   circ_client_machine.is_initialized = 1;
 
-  return &circ_client_machine;
+  return;
 }
 
 static circpad_machine_t circ_responder_machine;
-const circpad_machine_t *circpad_circ_responder_machine_new(void)
+void circpad_circ_responder_machine_setup(circuit_t *on_circ)
 {
+  /* Free the old machines (if any) */
+  circpad_machines_free(on_circ);
+
+  on_circ->padding_machine[0] = &circ_responder_machine;
+  on_circ->padding_info[0] = circpad_machineinfo_new(on_circ, 0);
+
   if (circ_responder_machine.is_initialized)
-    return &circ_responder_machine;
+    return;
 
   circ_responder_machine.transition_burst_events =
     CIRCPAD_TRANSITION_ON_PADDING_RECV;
@@ -599,20 +617,8 @@ const circpad_machine_t *circpad_circ_responder_machine_new(void)
 
   circ_responder_machine.is_initialized = 1;
 
-  return &circ_responder_machine;
+  return;
 }
-
-static circpad_machine_t circ_hs_service_intro_machine;
-const circpad_machine_t *circpad_hs_service_intro_machine_new();
-
-static circpad_machine_t circ_hs_client_intro_machine;
-const circpad_machine_t *circpad_hs_client_intro_machine_new();
-
-static circpad_machine_t circ_wtf_machine;
-const circpad_machine_t *circpad_wtf_machine_new();
-
-static circpad_machine_t circ_hs_service_rend_machine;
-const circpad_machine_t *circpad_hs_serv_rend_machine_new();
 
 /* Serialization */
 // TODO: Should we use keyword=value here? Are there helpers for that?
@@ -653,7 +659,8 @@ char *circpad_machine_to_string(const circpad_machine_t *machine)
 }
 
 // XXX: Writeme
-const circpad_machine_t *circpad_string_to_machine(const char *string)
+const circpad_machine_t *circpad_string_to_machine(const char *str)
 {
-  
+  (void)str;
+  return NULL;
 }

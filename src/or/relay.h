@@ -66,6 +66,11 @@ void append_cell_to_circuit_queue(circuit_t *circ, channel_t *chan,
 void channel_unlink_all_circuits(channel_t *chan, smartlist_t *detached_out);
 MOCK_DECL(int, channel_flush_from_first_active_circuit,
           (channel_t *chan, int max));
+MOCK_DECL(int, circuit_package_relay_cell, (cell_t *cell, circuit_t *circ,
+                           cell_direction_t cell_direction,
+                           crypt_path_t *layer_hint, streamid_t on_stream,
+                           const char *filename, int lineno));
+
 void assert_circuit_mux_okay(channel_t *chan);
 void update_circuit_on_cmux_(circuit_t *circ, cell_direction_t direction,
                              const char *file, int lineno);

@@ -356,7 +356,7 @@ circuit_receive_relay_cell(cell_t *cell, circuit_t *circ,
   if (cell_direction == CELL_DIRECTION_OUT) {
     cell->circ_id = circ->n_circ_id; /* switch it */
     chan = circ->n_chan;
-    circpad_event_nonpadding_recieved(circ);
+    circpad_event_nonpadding_received(circ);
   } else if (! CIRCUIT_IS_ORIGIN(circ)) {
     cell->circ_id = TO_OR_CIRCUIT(circ)->p_circ_id; /* switch it */
     chan = TO_OR_CIRCUIT(circ)->p_chan;
@@ -500,11 +500,11 @@ relay_crypt(circuit_t *circ, cell_t *cell, cell_direction_t cell_direction,
  *  - Encrypt it to the right layer
  *  - Append it to the appropriate cell_queue on <b>circ</b>.
  */
-static int
-circuit_package_relay_cell(cell_t *cell, circuit_t *circ,
+MOCK_IMPL(int,
+circuit_package_relay_cell, (cell_t *cell, circuit_t *circ,
                            cell_direction_t cell_direction,
                            crypt_path_t *layer_hint, streamid_t on_stream,
-                           const char *filename, int lineno)
+                           const char *filename, int lineno))
 {
   channel_t *chan; /* where to send the cell */
 
@@ -1601,10 +1601,10 @@ connection_edge_process_relay_cell(cell_t *cell, circuit_t *circ,
 
   if (rh.command == RELAY_COMMAND_DROP) {
     rep_hist_padding_count_read(PADDING_TYPE_DROP);
-    circpad_event_padding_recieved(circ);
+    circpad_event_padding_received(circ);
     return 0;
   } else {
-    circpad_event_nonpadding_recieved(circ);
+    circpad_event_nonpadding_received(circ);
   }
 
   /* either conn is NULL, in which case we've got a control cell, or else
