@@ -93,8 +93,7 @@ static void circpad_machine_setup_tokens(circpad_machineinfo_t *mi)
   memcpy(mi->histogram, state->histogram, sizeof(uint16_t)*state->histogram_len);
 }
 
-inline static uint32_t circpad_machine_sample_delay(circpad_machineinfo_t *mi,
-                                                    int *empty_hint)
+inline static uint32_t circpad_machine_sample_delay(circpad_machineinfo_t *mi)
 {
   const circpad_state_t *state = circpad_machine_current_state(mi);
   const uint16_t *histogram = NULL;
@@ -102,16 +101,15 @@ inline static uint32_t circpad_machine_sample_delay(circpad_machineinfo_t *mi,
   uint32_t curr_weight;
   uint32_t histogram_total = 0;
   uint32_t bin_choice; 
-  uint16_t bin_start, bin_end;
+  uint32_t bin_start, bin_end;
 
   tor_assert(state);
-  tor_assert(empty_hint);
 
   if (state->remove_tokens) {
     tor_assert(mi->histogram && mi->histogram_len == state->histogram_len);
 
     histogram = mi->histogram;
-    for (int b = 0; i < state->histogram_len; b++)
+    for (int b = 0; b < state->histogram_len; b++)
       histogram_total += histogram[b];
   } else {
     histogram = state->histogram;
@@ -137,12 +135,6 @@ inline static uint32_t circpad_machine_sample_delay(circpad_machineinfo_t *mi,
     mi->histogram[i]--;
   }
 
-  if (curr_weight == histogram_total) {
-    *empty_hint = 1;
-  } else {
-    *empty_hint = 0;
-  }
-
   if (i == state->histogram_len-1)
     return CIRCPAD_DELAY_INFINITE; // Infinity: Don't send a padding packet
 
@@ -165,11 +157,15 @@ void circpad_machine_remove_closest_token(circpad_machineinfo_t *mi)
   uint64_t target_bin_us;
   uint32_t histogram_total = 0;
 
-  target_bin_us = current_time - mi->last_sent_packet_time_us;
+  if (!mi->last_sent_packet_time_us) {
+    mi->last_sent_packet_time_us = current_time;
+    return;
+  }
 
+  target_bin_us = current_time - mi->last_sent_packet_time_us;
   mi->last_sent_packet_time_us = current_time;
 
-  if (!state->remove_tokens)
+  if (!state || !state->remove_tokens)
     return;
 
   tor_assert(mi->histogram && mi->histogram_len == state->histogram_len);
@@ -323,8 +319,8 @@ circpad_send_padding_callback(tor_timer_t *timer, void *args,
 circpad_decision_t circpad_machine_schedule_padding(circpad_machineinfo_t *mi)
 {
   uint32_t in_us = 0;
-  int bins_empty = 0;
   struct timeval timeout;
+  uint32_t histogram_total = 0;
   tor_assert(mi);
 
   if (mi->is_padding_scheduled) {
@@ -339,7 +335,7 @@ circpad_decision_t circpad_machine_schedule_padding(circpad_machineinfo_t *mi)
     return CIRCPAD_NONPADDING_STATE;
   }
 
-  in_us = circpad_machine_sample_delay(mi, &bins_empty);
+  in_us = circpad_machine_sample_delay(mi);
 
   if (in_us <= 0) {
     mi->is_padding_scheduled = 1;
@@ -378,11 +374,21 @@ circpad_decision_t circpad_machine_schedule_padding(circpad_machineinfo_t *mi)
 
   mi->is_padding_scheduled = 1;
 
-  if (bins_empty) {
-    // XXX: Return differently if we transition or not here?
-    // Hrmm. Padding is still scheduled though...
-    circpad_event_bins_empty(mi);
-    return CIRCPAD_PADDING_SCHEDULED;
+  /* Check if bins empty. Right now, we're operating under the assumption
+   * that this loop is better than the extra space for maintaining a
+   * running total in machineinfo */
+  // This check is only needed if we're removing tokens (ie have histograms
+  // in machineinfo)
+  if (mi->histogram && mi->histogram_len) {
+    for (int b = 0; b < mi->histogram_len; b++)
+      histogram_total += mi->histogram[b];
+
+    if (histogram_total == 0) {
+      // XXX: Return differently if we transition or not here?
+      // Hrmm. Padding is still scheduled though...
+      circpad_event_bins_empty(mi);
+      return CIRCPAD_PADDING_SCHEDULED;
+    }
   }
 
   return CIRCPAD_PADDING_SCHEDULED;
@@ -588,7 +594,8 @@ void circpad_circ_responder_machine_setup(circuit_t *on_circ)
     return;
 
   circ_responder_machine.transition_burst_events =
-    CIRCPAD_TRANSITION_ON_PADDING_RECV;
+    CIRCPAD_TRANSITION_ON_PADDING_RECV |
+    CIRCPAD_TRANSITION_ON_NONPADDING_RECV;
 
   circ_responder_machine.burst.transition_reschedule_events =
     CIRCPAD_TRANSITION_ON_PADDING_RECV;
