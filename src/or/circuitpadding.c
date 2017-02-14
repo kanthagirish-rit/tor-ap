@@ -121,7 +121,8 @@ inline static uint32_t circpad_machine_sample_delay(circpad_machineinfo_t *mi)
 
   // TODO: This is not constant-time. Pretty sure we don't
   // really need it to be, though.
-  while (curr_weight < bin_choice) {
+  // (A bin_choice of 0 means pick first non-empty bin)
+  while (!curr_weight || curr_weight < bin_choice) {
     tor_assert(i < state->histogram_len);
     curr_weight += histogram[i];
     i++;
@@ -204,8 +205,9 @@ static crypt_path_t *cpath_clone_shallow(crypt_path_t *cpath, int hops)
   crypt_path_t *new_prev = NULL;
   crypt_path_t *new_curr = NULL;
   crypt_path_t *orig_iter = cpath;
+  int i;
 
-  for (int i = 0; i < hops && orig_iter != cpath; i++) {
+  for (i = 0; i < hops; i++) {
     new_curr = tor_malloc_zero(sizeof(crypt_path_t));
     new_curr->magic = CRYPT_PATH_MAGIC;
 
@@ -221,12 +223,16 @@ static crypt_path_t *cpath_clone_shallow(crypt_path_t *cpath, int hops)
 
     new_prev = new_curr;
     orig_iter = orig_iter->next;
+
+    // Did we wrap around?
+    if (orig_iter == cpath)
+      break;
   }
 
   new_curr->next = new_head;
   new_head->prev = new_curr;
 
-  if (orig_iter == cpath) {
+  if (orig_iter == cpath && i < 2) {
     // XXX: tor_bug log (short cpath)
   }
 

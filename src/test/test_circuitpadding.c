@@ -76,6 +76,18 @@ circuit_package_relay_cell_mock(cell_t *cell, circuit_t *circ,
                            const char *filename, int lineno);
 
 static int
+cpath_get_len(crypt_path_t *cpath_orig)
+{
+  crypt_path_t *cpath, *cpath_next = NULL;
+  int n = 0;
+  for (cpath = cpath_orig; cpath_next != cpath_orig; cpath = cpath_next) {
+    cpath_next = cpath->next;
+    ++n;
+  }
+  return n;
+}
+
+static int
 circuit_package_relay_cell_mock(cell_t *cell, circuit_t *circ,
                            cell_direction_t cell_direction,
                            crypt_path_t *layer_hint, streamid_t on_stream,
@@ -85,16 +97,15 @@ circuit_package_relay_cell_mock(cell_t *cell, circuit_t *circ,
   if (circ == client_side) {
     tt_int_op(cell_direction, OP_EQ, CELL_DIRECTION_OUT);
     tt_ptr_op(layer_hint, OP_NE, TO_ORIGIN_CIRCUIT(circ)->cpath->prev);
-    // XXX: No, this is layer_hint that is two....
-    tt_int_op(circuit_get_cpath_len(TO_ORIGIN_CIRCUIT(circ)), OP_EQ, 2);
+    tt_int_op(cpath_get_len(layer_hint), OP_EQ, 2);
 
+    fprintf(stderr, "Client padded\n");
     n_client_cells++;
-    return 0;
   } else if (circ == relay_side) {
     tt_int_op(cell_direction, OP_EQ, CELL_DIRECTION_IN);
 
+    fprintf(stderr, "Relay padded\n");
     n_relay_cells++;
-    return 0;
   }
 
  done:
@@ -107,13 +118,16 @@ circuit_package_relay_cell_mock(cell_t *cell, circuit_t *circ,
 static void
 simulate_single_hop_extend(circuit_t *client, circuit_t *mid_relay)
 {
+  char whatevs_key[CPATH_KEY_MATERIAL_LEN];
+
   // Pretend a non-padding cell was sent
   circpad_event_nonpadding_sent((circuit_t*)client);
 
   // Receive extend cell at middle 
   circpad_event_nonpadding_received((circuit_t*)mid_relay);
 
-  // XXX: Sleep a tiny bit
+  // Sleep a tiny bit so we can calculate an RTT
+  tor_sleep_msec(100);
 
   // Receive extended cell at middle
   circpad_event_nonpadding_sent((circuit_t*)mid_relay);
@@ -126,7 +140,10 @@ simulate_single_hop_extend(circuit_t *client, circuit_t *mid_relay)
   onion_append_to_cpath(&TO_ORIGIN_CIRCUIT(client)->cpath, hop);
 
   hop->magic = CRYPT_PATH_MAGIC;
-  hop->state = CPATH_STATE_CLOSED;
+  hop->state = CPATH_STATE_OPEN;
+
+  // XXX: we need to free this..
+  circuit_init_cpath_crypto(hop, whatevs_key, 0);
 
   hop->package_window = circuit_initial_package_window();
   hop->deliver_window = CIRCWINDOW_START;
@@ -151,6 +168,9 @@ test_circuitpadding_circuitsetup_machine(void *arg)
   client_side = (circuit_t *)origin_circuit_new();
   // XXX: free these channels
   relay_side = (circuit_t *)new_fake_orcirc(new_fake_channel(), new_fake_channel());
+
+  relay_side->purpose = CIRCUIT_PURPOSE_OR;
+  client_side->purpose = CIRCUIT_PURPOSE_C_GENERAL;
 
   monotime_init();
   timers_initialize();

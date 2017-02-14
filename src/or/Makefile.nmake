@@ -15,6 +15,7 @@ LIBTOR_OBJECTS = \
   buffers.obj \
   channel.obj \
   channelpadding.obj \
+  circuitpadding.obj \
   channeltls.obj \
   circpathbias.obj \
   circuitbuild.obj \
