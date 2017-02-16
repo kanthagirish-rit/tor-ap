@@ -634,29 +634,43 @@ void circpad_circ_responder_machine_setup(circuit_t *on_circ)
     CIRCPAD_TRANSITION_ON_NONPADDING_RECV;
 
   circ_responder_machine.burst.transition_reschedule_events =
-    CIRCPAD_TRANSITION_ON_PADDING_RECV;
-
-  circ_responder_machine.burst.transition_cancel_events =
-    CIRCPAD_TRANSITION_ON_NONPADDING_RECV;
+    CIRCPAD_TRANSITION_ON_NONPADDING_SENT;
 
   circ_responder_machine.burst.transition_next_events =
-    CIRCPAD_TRANSITION_ON_BINS_EMPTY;
+    CIRCPAD_TRANSITION_ON_PADDING_RECV;
 
   circ_responder_machine.burst.next_state =
-    CIRCPAD_STATE_END;
-
-  circ_responder_machine.burst.remove_tokens = 1;
+    CIRCPAD_STATE_GAP;
 
   circ_responder_machine.burst.use_rtt_estimate = 1;
-  circ_responder_machine.burst.histogram_len = 6;
+  circ_responder_machine.burst.histogram_len = 1;
   circ_responder_machine.burst.start_usec = 5000;
   circ_responder_machine.burst.range_sec = 10;
-  circ_responder_machine.burst.histogram[0] = 0;
-  circ_responder_machine.burst.histogram[1] = 1;
-  circ_responder_machine.burst.histogram[2] = 2;
-  circ_responder_machine.burst.histogram[3] = 2;
-  circ_responder_machine.burst.histogram[4] = 1;
-  circ_responder_machine.burst.histogram_total = 6;
+  circ_responder_machine.burst.histogram[0] = 1; // Only infinity for this state
+  circ_responder_machine.burst.histogram_total = 1;
+
+  circ_responder_machine.gap.transition_reschedule_events =
+    CIRCPAD_TRANSITION_ON_PADDING_RECV |
+    CIRCPAD_TRANSITION_ON_NONPADDING_RECV;
+
+  circ_responder_machine.gap.transition_next_events =
+    CIRCPAD_TRANSITION_ON_BINS_EMPTY |
+    CIRCPAD_TRANSITION_ON_NONPADDING_SENT;
+
+  circ_responder_machine.gap.next_state =
+    CIRCPAD_STATE_END;
+
+  // FIXME: Tune this histogram
+  circ_responder_machine.gap.use_rtt_estimate = 1;
+  circ_responder_machine.gap.histogram_len = 6;
+  circ_responder_machine.gap.start_usec = 5000;
+  circ_responder_machine.gap.range_sec = 10;
+  circ_responder_machine.gap.histogram[0] = 0;
+  circ_responder_machine.gap.histogram[1] = 1;
+  circ_responder_machine.gap.histogram[2] = 2;
+  circ_responder_machine.gap.histogram[3] = 2;
+  circ_responder_machine.gap.histogram[4] = 1;
+  circ_responder_machine.gap.histogram_total = 6;
 
   circ_responder_machine.is_initialized = 1;
 
