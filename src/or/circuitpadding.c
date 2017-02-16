@@ -163,14 +163,15 @@ void circpad_machine_remove_closest_token(circpad_machineinfo_t *mi)
   uint64_t target_bin_us;
   uint32_t histogram_total = 0;
 
-  // XXX: This may need to be last_event_packet_time_us..
-  if (!mi->last_sent_packet_time_us) {
-    mi->last_sent_packet_time_us = current_time;
+  if (!mi->padding_was_scheduled_at_us) {
     return;
   }
 
-  target_bin_us = current_time - mi->last_sent_packet_time_us;
-  mi->last_sent_packet_time_us = current_time;
+  target_bin_us = current_time - mi->padding_was_scheduled_at_us;
+
+  // Cancel the padding, as this packet is counting instead.
+  mi->padding_was_scheduled_at_us = 0;
+  timer_disable(mi->padding_timer);
 
   if (!state || !state->remove_tokens)
     return;
@@ -265,7 +266,7 @@ static void cpath_free_shallow(crypt_path_t *cpath)
 
 void circpad_send_padding_cell_for_callback(circpad_machineinfo_t *mi)
 {
-  mi->is_padding_scheduled = 0;
+  mi->padding_was_scheduled_at_us = 0;
  
   // Make sure circuit didn't close on us
   if (mi->on_circ->marked_for_close) {
@@ -278,9 +279,6 @@ void circpad_send_padding_cell_for_callback(circpad_machineinfo_t *mi)
     tor_assert(mi->histogram[mi->chosen_bin] > 0);
     mi->histogram[mi->chosen_bin]--;
   }
-
-  // TODO: Should we write a utility function to use now instead?
-  mi->last_sent_packet_time_us = monotime_absolute_usec(); 
 
   if (CIRCUIT_IS_ORIGIN(mi->on_circ)) {
     crypt_path_t *new_cpath;
@@ -365,10 +363,10 @@ circpad_decision_t circpad_machine_schedule_padding(circpad_machineinfo_t *mi)
     return CIRCPAD_NONPADDING_STATE;
   }
 
-  if (mi->is_padding_scheduled) {
+  if (mi->padding_was_scheduled_at_us) {
     /* Cancel current timer (if any) */
     timer_disable(mi->padding_timer);
-    mi->is_padding_scheduled = 0;
+    mi->padding_was_scheduled_at_us = 0; 
   }
 
   in_us = circpad_machine_sample_delay(mi);
@@ -376,7 +374,7 @@ circpad_decision_t circpad_machine_schedule_padding(circpad_machineinfo_t *mi)
   fprintf(stderr, "Padding in %u usec\n", in_us);
 
   if (in_us <= 0) {
-    mi->is_padding_scheduled = 1;
+    mi->padding_was_scheduled_at_us = monotime_absolute_usec(); 
     circpad_send_padding_cell_for_callback(mi);
     return CIRCPAD_PADDING_SENT;
   }
@@ -412,7 +410,7 @@ circpad_decision_t circpad_machine_schedule_padding(circpad_machineinfo_t *mi)
   // XXX: Unify with channelpadding counter
   //rep_hist_padding_count_timers(++total_timers_pending);
 
-  mi->is_padding_scheduled = 1;
+  mi->padding_was_scheduled_at_us = monotime_absolute_usec(); 
 
   return CIRCPAD_PADDING_SCHEDULED;
 }
@@ -446,10 +444,10 @@ circpad_decision_t circpad_machine_transition(circpad_machineinfo_t *mi,
   }
  
   if (state->transition_cancel_events & event) {
-    if (mi->is_padding_scheduled) {
+    if (mi->padding_was_scheduled_at_us) {
       /* Cancel current timer (if any) */
       timer_disable(mi->padding_timer);
-      mi->is_padding_scheduled = 0;
+      mi->padding_was_scheduled_at_us = 0;
       return CIRCPAD_WONTPAD_CANCELED;
     }
     return CIRCPAD_WONTPAD_EVENT;

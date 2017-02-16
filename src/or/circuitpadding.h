@@ -109,13 +109,11 @@ typedef struct circpad_machineinfo_t {
   /** The circuit for this machine */
   circuit_t *on_circ;
 
-  /* The last time we sent a padding or non-padding packet.
+  /** The time at which we scheduled a non-padding packet.
    * Monotonic time in microseconds since system start.
-   * XXX: This needs to be "last packet scheduled time",
-   * since what we're really doing is removing from a bin as if
-   * we sent a padding packet..
+   * This is 0 if padding is not currently scheduled.
    */
-  uint64_t last_sent_packet_time_us;
+  uint64_t padding_was_scheduled_at_us;
 
   /* The last time we got an event relevant to estimating
    * the RTT. Monotonic time in microseconds since system
@@ -140,9 +138,6 @@ typedef struct circpad_machineinfo_t {
    * (make sure changes to the bitwidth can support the
    * CIRCPAD_MAX_MACHINES define). */
   uint8_t machine_index : 1;
-
-  /** Is a padding packet scheduled? */
-  uint8_t is_padding_scheduled : 1;
 
 } circpad_machineinfo_t;
 
