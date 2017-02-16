@@ -140,8 +140,14 @@ inline static uint32_t circpad_machine_sample_delay(circpad_machineinfo_t *mi)
     mi->chosen_bin = i;
   }
 
-  if (i == state->histogram_len-1)
+  if (i == state->histogram_len-1) {
+    if (state->remove_tokens) {
+      tor_assert(mi->histogram[i] > 0);
+      mi->histogram[i]--;
+    }
+
     return CIRCPAD_DELAY_INFINITE; // Infinity: Don't send a padding packet
+  }
 
   tor_assert(i < state->histogram_len - 1);
 
@@ -181,11 +187,13 @@ void circpad_machine_remove_closest_token(circpad_machineinfo_t *mi)
   /* First, check if we came before bin 0. In which case, decrement it. */
   if (circpad_histogram_bin_us(mi, 0) > target_bin_us) {
     mi->histogram[0]--;
+    fprintf(stderr, "Token removal: %x %d\n", mi, mi->histogram[0]);
   } else {
     /* Otherwise, we need to remove the token from the first bin
      * whose upper bound is greater than the target, and that
-     * has tokens remaining. */ 
-    for (int i = 1; i <= mi->histogram_len; i++) {
+     * has tokens remaining. */
+    int i;
+    for (i = 1; i <= mi->histogram_len; i++) {
       if (circpad_histogram_bin_us(mi, i) > target_bin_us) {
         if (mi->histogram[i-1]) {
           mi->histogram[i-1]--;
@@ -193,6 +201,11 @@ void circpad_machine_remove_closest_token(circpad_machineinfo_t *mi)
           break;
         }
       }
+    }
+
+    // XXX: Hrmm... What to do here? Remove lower?
+    if (i > mi->histogram_len) {
+      fprintf(stderr, "No more upper tokens: %x\n", mi);
     }
   }
 
@@ -596,8 +609,8 @@ void circpad_circ_client_machine_setup(circuit_t *on_circ)
   circ_client_machine.burst.histogram_len = 5;
   circ_client_machine.burst.start_usec = 500;
   circ_client_machine.burst.range_sec = 1;
-  circ_client_machine.burst.histogram[0] = 6;
-  circ_client_machine.burst.histogram_total = 6;
+  circ_client_machine.burst.histogram[0] = 5;
+  circ_client_machine.burst.histogram_total = 5;
 
   circ_client_machine.is_initialized = 1;
 
