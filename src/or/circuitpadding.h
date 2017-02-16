@@ -111,6 +111,9 @@ typedef struct circpad_machineinfo_t {
 
   /* The last time we sent a padding or non-padding packet.
    * Monotonic time in microseconds since system start.
+   * XXX: This needs to be "last packet scheduled time",
+   * since what we're really doing is removing from a bin as if
+   * we sent a padding packet..
    */
   uint64_t last_sent_packet_time_us;
 
@@ -126,6 +129,7 @@ typedef struct circpad_machineinfo_t {
    * remove_tokens is false for that state */
   uint16_t *histogram;
   uint8_t histogram_len;
+  uint8_t chosen_idx; // XXX: remove token from this index upon sending padding
 
   /** What state is this machine in? */
   circpad_statenum_t current_state;

@@ -134,6 +134,8 @@ inline static uint32_t circpad_machine_sample_delay(circpad_machineinfo_t *mi)
 
   tor_assert(i < state->histogram_len);
 
+  // XXX: Shit, this removes the token even if the padding
+  // is not sent. Need to store this index for callback?
   if (state->remove_tokens) {
     tor_assert(mi->histogram[i] > 0);
     mi->histogram[i]--;
@@ -187,6 +189,7 @@ void circpad_machine_remove_closest_token(circpad_machineinfo_t *mi)
       if (circpad_histogram_bin_us(mi, i) > target_bin_us) {
         if (mi->histogram[i-1]) {
           mi->histogram[i-1]--;
+          fprintf(stderr, "Token removal: %x %d\n", mi, mi->histogram[i-1]);
           break;
         }
       }
