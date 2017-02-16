@@ -98,7 +98,7 @@ inline static uint32_t circpad_machine_sample_delay(circpad_machineinfo_t *mi)
   const circpad_state_t *state = circpad_machine_current_state(mi);
   const uint16_t *histogram = NULL;
   int i = 0;
-  uint32_t curr_weight;
+  uint32_t curr_weight = 0;
   uint32_t histogram_total = 0;
   uint32_t bin_choice; 
   uint32_t bin_start, bin_end;
@@ -117,18 +117,21 @@ inline static uint32_t circpad_machine_sample_delay(circpad_machineinfo_t *mi)
   }
 
   bin_choice = crypto_rand_int(histogram_total);
-  curr_weight = histogram[0];
+
+  /* Skip all the initial zero bins */
+  while (!histogram[i]) {
+    i++;
+  }
+  curr_weight = histogram[i];
 
   // TODO: This is not constant-time. Pretty sure we don't
   // really need it to be, though.
-  // (A bin_choice of 0 means pick first non-empty bin)
-  while (!curr_weight || curr_weight < bin_choice) {
+  while (curr_weight < bin_choice) {
+    i++;
     tor_assert(i < state->histogram_len);
     curr_weight += histogram[i];
-    i++;
   }
 
-  tor_assert(curr_weight);
   tor_assert(i < state->histogram_len);
 
   if (state->remove_tokens) {
@@ -151,6 +154,7 @@ inline static uint32_t circpad_machine_sample_delay(circpad_machineinfo_t *mi)
 /* Remove a token from the bin corresponding to the delta since
  * last packet, or the next greater bin */
 // TODO: remove from lower bin? lowest bin? closest bin?
+// XXX: Hidden service circuit machine may need both...
 void circpad_machine_remove_closest_token(circpad_machineinfo_t *mi)
 {
   uint64_t current_time = monotime_absolute_usec();
@@ -158,6 +162,7 @@ void circpad_machine_remove_closest_token(circpad_machineinfo_t *mi)
   uint64_t target_bin_us;
   uint32_t histogram_total = 0;
 
+  // XXX: This may need to be last_event_packet_time_us..
   if (!mi->last_sent_packet_time_us) {
     mi->last_sent_packet_time_us = current_time;
     return;
@@ -329,19 +334,25 @@ circpad_decision_t circpad_machine_schedule_padding(circpad_machineinfo_t *mi)
   uint32_t histogram_total = 0;
   tor_assert(mi);
 
+  fprintf(stderr, "Scheduling padding?\n");
+  // Don't pad in either state start or end (but
+  // also don't cancel any previously scheduled padding
+  // either).
+  if (mi->current_state == CIRCPAD_STATE_START ||
+      mi->current_state == CIRCPAD_STATE_END) {
+    fprintf(stderr, "End state\n");
+    return CIRCPAD_NONPADDING_STATE;
+  }
+
   if (mi->is_padding_scheduled) {
     /* Cancel current timer (if any) */
     timer_disable(mi->padding_timer);
     mi->is_padding_scheduled = 0;
   }
 
-  // Don't pad in either state start or end.
-  if (mi->current_state == CIRCPAD_STATE_START ||
-      mi->current_state == CIRCPAD_STATE_END) {
-    return CIRCPAD_NONPADDING_STATE;
-  }
-
   in_us = circpad_machine_sample_delay(mi);
+
+  fprintf(stderr, "Padding in %u usec\n", in_us);
 
   if (in_us <= 0) {
     mi->is_padding_scheduled = 1;
@@ -358,6 +369,8 @@ circpad_decision_t circpad_machine_schedule_padding(circpad_machineinfo_t *mi)
 
   timeout.tv_sec = in_us/USEC_PER_SEC;
   timeout.tv_usec = (in_us%USEC_PER_SEC);
+
+  fprintf(stderr, "Padding in %u sec, %u usec\n", timeout.tv_sec, timeout.tv_usec);
 
   if (!mi->on_circ->padding_handles[mi->machine_index]) {
     mi->on_circ->padding_handles[mi->machine_index] =
@@ -407,7 +420,8 @@ circpad_decision_t circpad_machine_transition(circpad_machineinfo_t *mi,
       circpad_machine_current_state(mi);
 
   if (!state) {
-    if (CIRCPAD_GET_MACHINE(mi)->transition_burst_events & event) {
+    if (mi->current_state == CIRCPAD_STATE_START &&
+        CIRCPAD_GET_MACHINE(mi)->transition_burst_events & event) {
       mi->current_state = CIRCPAD_STATE_BURST;
 
       circpad_machine_setup_tokens(mi);
@@ -439,7 +453,8 @@ circpad_decision_t circpad_machine_transition(circpad_machineinfo_t *mi,
 
   if (state->transition_next_events & event) {
     mi->current_state = state->next_state;
-    
+
+    fprintf(stderr, "State transition\n");    
     circpad_machine_setup_tokens(mi);
     return circpad_machine_schedule_padding(mi);
   }

@@ -31,12 +31,18 @@ new_fake_orcirc(channel_t *nchan, channel_t *pchan)
 {
   or_circuit_t *orcirc = NULL;
   circuit_t *circ = NULL;
+  crypt_path_t tmp_cpath;
+  char whatevs_key[CPATH_KEY_MATERIAL_LEN];
+
+  // XXX: Hack to get cmux
+  nchan->cmux = circuitmux_alloc();
+  pchan->cmux = circuitmux_alloc();
 
   orcirc = tor_malloc_zero(sizeof(*orcirc));
   circ = &(orcirc->base_);
   circ->magic = OR_CIRCUIT_MAGIC;
 
-  circ->n_chan = nchan;
+  //circ->n_chan = nchan;
   circ->n_circ_id = get_unique_circ_id_by_chan(nchan);
   circ->n_mux = NULL; /* ?? */
   cell_queue_init(&(circ->n_chan_cells));
@@ -52,9 +58,22 @@ new_fake_orcirc(channel_t *nchan, channel_t *pchan)
   circ->deliver_window = CIRCWINDOW_START_MAX;
   circ->n_chan_create_cell = NULL;
 
-  orcirc->p_chan = pchan;
+  //orcirc->p_chan = pchan;
   orcirc->p_circ_id = get_unique_circ_id_by_chan(pchan);
   cell_queue_init(&(orcirc->p_chan_cells));
+
+  circuit_set_p_circid_chan(orcirc, orcirc->p_circ_id, pchan);
+  circuit_set_n_circid_chan(circ, circ->n_circ_id, nchan);
+
+  memset(&tmp_cpath, 0, sizeof(tmp_cpath));
+  if (circuit_init_cpath_crypto(&tmp_cpath, whatevs_key, 0)<0) {
+    log_warn(LD_BUG,"Circuit initialization failed");
+    return NULL;
+  }
+  orcirc->n_digest = tmp_cpath.f_digest;
+  orcirc->n_crypto = tmp_cpath.f_crypto;
+  orcirc->p_digest = tmp_cpath.b_digest;
+  orcirc->p_crypto = tmp_cpath.b_crypto;
 
   return orcirc;
 }
@@ -100,11 +119,21 @@ circuit_package_relay_cell_mock(cell_t *cell, circuit_t *circ,
     tt_int_op(cpath_get_len(layer_hint), OP_EQ, 2);
 
     fprintf(stderr, "Client padded\n");
+    // Pretend a padding cell was sent
+    circpad_event_padding_sent(client_side);
+
+    // Receive padding cell at middle 
+    circpad_event_padding_received(relay_side);
     n_client_cells++;
   } else if (circ == relay_side) {
     tt_int_op(cell_direction, OP_EQ, CELL_DIRECTION_IN);
 
     fprintf(stderr, "Relay padded\n");
+    // Pretend a padding cell was sent
+    circpad_event_padding_sent(relay_side);
+
+    // Receive padding cell at client
+    circpad_event_padding_received(client_side);
     n_relay_cells++;
   }
 
@@ -127,7 +156,7 @@ simulate_single_hop_extend(circuit_t *client, circuit_t *mid_relay)
   circpad_event_nonpadding_received((circuit_t*)mid_relay);
 
   // Sleep a tiny bit so we can calculate an RTT
-  tor_sleep_msec(100);
+  tor_sleep_msec(10);
 
   // Receive extended cell at middle
   circpad_event_nonpadding_sent((circuit_t*)mid_relay);
@@ -191,8 +220,36 @@ test_circuitpadding_circuitsetup_machine(void *arg)
               CIRCPAD_STATE_BURST);
   }
 
-  // Wait for the timer (XXX: until state end) */
   event_base_loop(tor_libevent_get_base(), 0);
+  tt_int_op(n_client_cells, OP_EQ, 1);
+  tt_int_op(n_relay_cells, OP_EQ, 0);
+
+  fprintf(stderr, "Wait loop\n");
+  event_base_loop(tor_libevent_get_base(), 0);
+  tt_int_op(n_client_cells, OP_EQ, 1);
+  tt_int_op(n_relay_cells, OP_EQ, 1);
+
+  fprintf(stderr, "Wait loop\n");
+  event_base_loop(tor_libevent_get_base(), 0);
+  tt_int_op(n_client_cells, OP_EQ, 2);
+  tt_int_op(n_relay_cells, OP_EQ, 1);
+
+  fprintf(stderr, "Wait loop\n");
+  event_base_loop(tor_libevent_get_base(), 0);
+  tt_int_op(n_client_cells, OP_EQ, 2);
+  tt_int_op(n_relay_cells, OP_EQ, 2);
+
+  fprintf(stderr, "Wait loop\n");
+  event_base_loop(tor_libevent_get_base(), 0);
+  tt_int_op(n_client_cells, OP_EQ, 3);
+  tt_int_op(n_relay_cells, OP_EQ, 2);
+
+  fprintf(stderr, "Wait loop\n");
+  event_base_loop(tor_libevent_get_base(), 0);
+  tt_int_op(n_client_cells, OP_EQ, 3);
+  tt_int_op(n_relay_cells, OP_EQ, 3);
+
+  fprintf(stderr, "Client %d, relay: %d\n", n_client_cells, n_relay_cells);
 
  done:
   timers_shutdown();
