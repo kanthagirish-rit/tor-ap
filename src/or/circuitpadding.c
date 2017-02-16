@@ -133,12 +133,11 @@ inline static uint32_t circpad_machine_sample_delay(circpad_machineinfo_t *mi)
   }
 
   tor_assert(i < state->histogram_len);
+  tor_assert(histogram[i] > 0);
 
-  // XXX: Shit, this removes the token even if the padding
-  // is not sent. Need to store this index for callback?
+  // Store this index to remove the token upon callback.
   if (state->remove_tokens) {
-    tor_assert(mi->histogram[i] > 0);
-    mi->histogram[i]--;
+    mi->chosen_bin = i;
   }
 
   if (i == state->histogram_len-1)
@@ -274,6 +273,12 @@ void circpad_send_padding_cell_for_callback(circpad_machineinfo_t *mi)
     return;
   }
 
+  if (mi->histogram && mi->histogram_len) {
+    tor_assert(mi->chosen_bin < mi->histogram_len);
+    tor_assert(mi->histogram[mi->chosen_bin] > 0);
+    mi->histogram[mi->chosen_bin]--;
+  }
+
   // TODO: Should we write a utility function to use now instead?
   mi->last_sent_packet_time_us = monotime_absolute_usec(); 
 
@@ -307,6 +312,20 @@ void circpad_send_padding_cell_for_callback(circpad_machineinfo_t *mi)
     // edge.
     relay_send_command_from_edge(0, mi->on_circ, RELAY_COMMAND_DROP, NULL, 0, NULL);
   }
+
+  /* Check if bins empty. Right now, we're operating under the assumption
+   * that this loop is better than the extra space for maintaining a
+   * running total in machineinfo */
+  if (mi->histogram && mi->histogram_len) {
+    uint32_t histogram_total = 0;
+
+    for (int b = 0; b < mi->histogram_len; b++)
+      histogram_total += mi->histogram[b];
+
+    if (histogram_total == 0) {
+      circpad_event_bins_empty(mi);
+    }
+  }
 }
 
 static void
@@ -334,7 +353,6 @@ circpad_decision_t circpad_machine_schedule_padding(circpad_machineinfo_t *mi)
 {
   uint32_t in_us = 0;
   struct timeval timeout;
-  uint32_t histogram_total = 0;
   tor_assert(mi);
 
   fprintf(stderr, "Scheduling padding?\n");
@@ -395,23 +413,6 @@ circpad_decision_t circpad_machine_schedule_padding(circpad_machineinfo_t *mi)
   //rep_hist_padding_count_timers(++total_timers_pending);
 
   mi->is_padding_scheduled = 1;
-
-  /* Check if bins empty. Right now, we're operating under the assumption
-   * that this loop is better than the extra space for maintaining a
-   * running total in machineinfo */
-  // This check is only needed if we're removing tokens (ie have histograms
-  // in machineinfo)
-  if (mi->histogram && mi->histogram_len) {
-    for (int b = 0; b < mi->histogram_len; b++)
-      histogram_total += mi->histogram[b];
-
-    if (histogram_total == 0) {
-      // XXX: Return differently if we transition or not here?
-      // Hrmm. Padding is still scheduled though...
-      circpad_event_bins_empty(mi);
-      return CIRCPAD_PADDING_SCHEDULED;
-    }
-  }
 
   return CIRCPAD_PADDING_SCHEDULED;
 }

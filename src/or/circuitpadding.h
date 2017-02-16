@@ -129,7 +129,8 @@ typedef struct circpad_machineinfo_t {
    * remove_tokens is false for that state */
   uint16_t *histogram;
   uint8_t histogram_len;
-  uint8_t chosen_idx; // XXX: remove token from this index upon sending padding
+  /** Remove token from this index upon sending padding */
+  uint8_t chosen_bin;
 
   /** What state is this machine in? */
   circpad_statenum_t current_state;
