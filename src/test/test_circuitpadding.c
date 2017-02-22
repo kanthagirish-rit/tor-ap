@@ -313,8 +313,8 @@ test_circuitpadding_circuitsetup_machine(void *arg)
     { #name, test_##name, (flags), NULL, NULL }
 
 struct testcase_t circuitpadding_tests[] = {
-  //TEST_CHANNELPADDING(channelpadding_decide_to_pad_channel, 0),
-  TEST_CIRCUITPADDING(circuitpadding_circuitsetup_machine, 0),
+  //TEST_CIRCUITPADDING(circuitpadding_circuitsetup_machine, 0),
+  TEST_CIRCUITPADDING(circuitpadding_circuitsetup_machine, TT_FORK),
   END_OF_TESTCASES
 };
 
