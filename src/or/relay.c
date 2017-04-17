@@ -1599,6 +1599,14 @@ connection_edge_process_relay_cell(cell_t *cell, circuit_t *circ,
     }
   }
 
+  if (rh.command == RELAY_COMMAND_PADDING_NEGOTIATE) {
+    circpad_event_padding_negotiate(circ, cell);
+
+    rep_hist_padding_count_read(PADDING_TYPE_DROP);
+    circpad_event_padding_received(circ);
+    return 0;
+  }
+
   if (rh.command == RELAY_COMMAND_DROP) {
     rep_hist_padding_count_read(PADDING_TYPE_DROP);
     circpad_event_padding_received(circ);

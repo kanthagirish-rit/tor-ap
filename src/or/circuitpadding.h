@@ -173,7 +173,18 @@ void circpad_event_padding_received(circuit_t *on_circ);
 void circpad_event_infinity(circpad_machineinfo_t *mi);
 void circpad_event_bins_empty(circpad_machineinfo_t *mi);
 
+int circpad_node_supports_padding(const node_t *node);
+
 /* Machines for various usecases */
+
+/**
+ * This specifies a particular padding machine to use after negotiation.
+ *
+ * The constants for machine_num_t are in trunnel.
+ * We want to be able to define extra numbers in the consensus/torrc, though.
+ */
+typedef uint8_t circpad_machine_num_t;
+
 void circpad_circ_client_machine_setup(circuit_t *);
 void circpad_circ_responder_machine_setup(circuit_t *on_circ);
 
@@ -187,5 +198,6 @@ void circpad_machines_free(circuit_t *circ);
 
 char *circpad_machine_to_string(const circpad_machine_t *machine);
 const circpad_machine_t *circpad_string_to_machine(const char *str);
+
 
 #endif

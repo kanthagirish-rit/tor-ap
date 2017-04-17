@@ -29,6 +29,7 @@ typedef enum protocol_type_t {
   PRT_DESC,
   PRT_MICRODESC,
   PRT_CONS,
+  PRT_PADDING,
 } protocol_type_t;
 
 int protover_all_supported(const char *s, char **missing);

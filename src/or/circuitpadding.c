@@ -36,7 +36,7 @@ inline static const circpad_state_t *circpad_machine_current_state(
       return &CIRCPAD_GET_MACHINE(machine)->gap;
   }
 
-  // XXX: tor_bug?
+  // XXX-MP-AP: tor_bug?
   tor_assert(0);
 }
 
@@ -160,8 +160,8 @@ inline static uint32_t circpad_machine_sample_delay(circpad_machineinfo_t *mi)
 
 /* Remove a token from the bin corresponding to the delta since
  * last packet, or the next greater bin */
-// TODO: remove from lower bin? lowest bin? closest bin?
-// XXX: Hidden service circuit machine may need both...
+// TODO-MP-AP: remove from lower bin? lowest bin? closest bin?
+// FIXME-MP-AP: Hidden service circuit machine may need both...
 void circpad_machine_remove_closest_token(circpad_machineinfo_t *mi)
 {
   uint64_t current_time = monotime_absolute_usec();
@@ -203,7 +203,7 @@ void circpad_machine_remove_closest_token(circpad_machineinfo_t *mi)
       }
     }
 
-    // XXX: Hrmm... What to do here? Remove lower?
+    // XXX-MP-AP: Hrmm... What to do here? Remove lower, refill, or ignore?
     if (i > mi->histogram_len) {
       fprintf(stderr, "No more upper tokens: %x\n", mi);
     }
@@ -254,7 +254,7 @@ static crypt_path_t *cpath_clone_shallow(crypt_path_t *cpath, int hops)
   new_head->prev = new_curr;
 
   if (orig_iter == cpath && i < 2) {
-    // XXX: tor_bug log (short cpath)
+    // XXX-MP-AP: tor_bug log (short cpath)
   }
 
   return new_head;
@@ -283,7 +283,7 @@ void circpad_send_padding_cell_for_callback(circpad_machineinfo_t *mi)
  
   // Make sure circuit didn't close on us
   if (mi->on_circ->marked_for_close) {
-    // XXX: tor_log at info?
+    // XXX-MP-AP: tor_log at info?
     return;
   }
 
@@ -298,7 +298,7 @@ void circpad_send_padding_cell_for_callback(circpad_machineinfo_t *mi)
 
     // Check that we have at least a 2 hop circuit
     if (circuit_get_cpath_len(TO_ORIGIN_CIRCUIT(mi->on_circ)) < 2) {
-      // XXX: tor_log
+      // XXX-MP-AP: tor_log
       return;
     }
 
@@ -309,7 +309,7 @@ void circpad_send_padding_cell_for_callback(circpad_machineinfo_t *mi)
     if (!new_cpath || new_cpath == new_cpath->next ||
         new_cpath->state != CPATH_STATE_OPEN ||
         new_cpath->next->state != CPATH_STATE_OPEN) {
-      // XXX: tor_log.. 
+      // XXX-MP-AP: tor_log.. 
       cpath_free_shallow(new_cpath);
       return;
     }
@@ -351,12 +351,12 @@ circpad_send_padding_callback(tor_timer_t *timer, void *args,
     assert_circuit_ok(mi->on_circ);
     circpad_send_padding_cell_for_callback(mi);
   } else {
-    // XXX: This shouldn't happen (represents a handle leak)
+    // XXX-MP-AP: This shouldn't happen (represents a handle leak)
     log_fn(LOG_INFO,LD_OR,
             "Circuit closed while waiting for timer.");
   }
 
-  // XXX: Unify this counter with channelpadding somehow for rephist stats
+  // XXX-MP-AP: Unify this counter with channelpadding somehow for rephist stats
   //total_timers_pending--;
 }
 
@@ -394,7 +394,7 @@ circpad_decision_t circpad_machine_schedule_padding(circpad_machineinfo_t *mi)
 
   // Don't schedule if we have infinite delay.
   if (in_us == CIRCPAD_DELAY_INFINITE) {
-    // XXX: Return differently if we transition or not?
+    // XXX-MP-AP: Return differently if we transition or not?
     circpad_event_infinity(mi);
     return CIRCPAD_WONTPAD_INFINITY;
   }
@@ -420,7 +420,7 @@ circpad_decision_t circpad_machine_schedule_padding(circpad_machineinfo_t *mi)
   }
   timer_schedule(mi->padding_timer, &timeout);
 
-  // XXX: Unify with channelpadding counter
+  // XXX-MP-AP: Unify with channelpadding counter
   //rep_hist_padding_count_timers(++total_timers_pending);
 
   mi->padding_was_scheduled_at_us = monotime_absolute_usec(); 
@@ -488,13 +488,17 @@ void circpad_event_nonpadding_sent(circuit_t *on_circ)
                                CIRCPAD_TRANSITION_ON_NONPADDING_SENT);
 
     /* Round trip time estimate (only valid for relay-side machines) */
+    // XXX-MP-AP: This estimate will not make sense for circuits after any
+    // full-duplex activity happens. Should we stop updating it
+    // when the circuit is built? Or after first relay packet? Or after
+    // first back-to-back packet? (yes, that one)
     if (on_circ->padding_info[i]->last_rtt_packet_time_us) {
       uint64_t rtt_time = monotime_absolute_usec() -
           on_circ->padding_info[i]->last_rtt_packet_time_us;
 
       /* Use INT32_MAX to ensure the addition doesn't overflow */
       if (rtt_time >= INT32_MAX) {
-        // XXX: tor_log
+        // XXX-MP-AP: tor_log
         continue;
       }
 
@@ -548,6 +552,42 @@ void circpad_event_bins_empty(circpad_machineinfo_t *mi)
 {
   if (!circpad_machine_transition(mi, CIRCPAD_TRANSITION_ON_BINS_EMPTY)) {
     circpad_machine_setup_tokens(mi);
+  }
+}
+
+void circpad_event_padding_negotiate(circuit_t *circ, cell_t *cell)
+{
+  circpad_negotiate_t negotiate;
+
+  if (circpad_negotiate_parse(&negotiate, cell->payload+RELAY_HEADER_SIZE,
+                               CELL_SIZE-RELAY_HEADER_SIZE) < 0) {
+    log_fn(LOG_PROTOCOL_WARN, LD_CIRC,
+          "Received malformed PADDING_NEGOTIATE cell; "
+          "dropping.");
+
+    return;
+  }
+
+  if (negotiate.command == CIRCPAD_STOP) {
+    circpad_machines_free(circ);
+  } else if (negotiate.command == CIRCPAD_START) {
+    // XXX-MP-AP: Support the other machine types..
+
+    switch (negotiate.machine_type) {
+      case CIRCPAD_MACHINE_CIRC_SETUP:
+        circpad_circ_serv_machine_setup(circ);
+        break;
+      case CIRCPAD_MACHINE_HS_CLIENT_INTRO:
+        break;
+      case CIRCPAD_MACHINE_HS_SERVICE_INTRO:
+        break;
+      case CIRCPAD_MACHINE_HS_SERVICE_REND:
+        break;
+      case CIRCPAD_MACHINE_WTF_PAD:
+        break;
+      default:
+        break;
+    }
   }
 }
 
@@ -675,6 +715,76 @@ void circpad_circ_responder_machine_setup(circuit_t *on_circ)
   circ_responder_machine.is_initialized = 1;
 
   return;
+}
+
+static int
+circpad_node_supports_padding(const node_t *node)
+{
+  if (node->ri) {
+    const char *protos = node->ri->protocol_list;
+    if (protos == NULL)
+      return 0;
+    return protocol_list_supports_protocol(protos, PRT_PADDING, 3);
+  }
+
+  return 0;
+}
+
+static const node_t *
+circuit_get_nth_hop(origin_circuit_t *circ, int hop)
+{
+  crypt_path_t *iter = circ->cpath;
+  int i;
+
+  for (i = 0; i < hop; i++) {
+    iter = iter->next;
+
+    // Did we wrap around?
+    if (iter == circ->cpath)
+      return NULL;
+  }
+
+  return node_get_by_id(iter->extend_info->identity_digest);
+}
+
+static int
+circpad_circuit_supports_padding(origin_circuit_t *circ)
+{
+  const node_t *hop;
+
+  if (!(hop = circuit_get_nth_hop(circ, 2))) {
+    return 0;
+  }
+
+  return circpad_node_supports_padding(hop); 
+}
+
+int
+circpad_negotiate_padding(origin_circuit_t *circ, circpad_machine_num_t machine,
+                          int request_echo)
+{
+  cell_t cell;
+  circpad_negotiate_t type;
+
+  if (!circpad_circuit_supports_padding(circ)) {
+    return 0;
+  } 
+
+  // XXX-MP-AP: Encode and send a negotiate cell to second hop
+
+  memset(&cell, 0, sizeof(cell_t));
+  memset(&disable, 0, sizeof(channelpadding_negotiate_t));
+  cell.command = CELL_RELAY; // XXX-MP-AP: or relay_early? it gets reset, right?
+
+  circpad_negotiate_set_command(&disable, CIRCPAD_COMMAND_START);
+
+  if (channelpadding_negotiate_encode(cell.payload, CELL_PAYLOAD_SIZE,
+        &disable) < 0)
+    return -1;
+
+  if (chan->write_cell(chan, &cell) == 1)
+    return 0;
+
 }
 
 /* Serialization */

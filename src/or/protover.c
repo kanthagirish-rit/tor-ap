@@ -45,6 +45,7 @@ static const struct {
   { PRT_HSREND, "HSRend" },
   { PRT_DESC, "Desc" },
   { PRT_MICRODESC, "Microdesc"},
+  { PRT_PADDING, "Padding"},
   { PRT_CONS, "Cons" }
 };
 
@@ -295,7 +296,8 @@ protover_get_supported_protocols(void)
     "Link=1-4 "
     "LinkAuth=1,3 "
     "Microdesc=1-2 "
-    "Relay=1-2";
+    "Relay=1-2 "
+    "Padding=1";
 }
 
 /** The protocols from protover_get_supported_protocols(), as parsed into a

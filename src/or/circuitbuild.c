@@ -2458,6 +2458,8 @@ onion_extend_cpath(origin_circuit_t *circ)
       tor_assert_nonfatal(info || client);
     }
   } else {
+    // TODO-MP-AP: For research: Hack this to return a specific middle
+    // node/nodes that support padding for the second hop only
     const node_t *r =
       choose_good_middle_server(purpose, state, circ->cpath, cur_len);
     if (r) {
