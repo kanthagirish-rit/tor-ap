@@ -36,8 +36,10 @@ inline static const circpad_state_t *circpad_machine_current_state(
       return &CIRCPAD_GET_MACHINE(machine)->gap;
   }
 
-  // XXX-MP-AP: tor_bug?
-  tor_assert(0);
+  log_fn(LOG_WARN,LD_CIRC,
+         "Invalid circuit padding state %d",
+         machine->current_state);
+  BUG(0);
 }
 
 /**
@@ -254,7 +256,9 @@ static crypt_path_t *cpath_clone_shallow(crypt_path_t *cpath, int hops)
   new_head->prev = new_curr;
 
   if (orig_iter == cpath && i < 2) {
-    // XXX-MP-AP: tor_bug log (short cpath)
+    log_fn(LOG_WARN,LD_CIRC,
+           "Trying to do padding on short (one-hop) circuit!");
+    BUG(i >= 2);
   }
 
   return new_head;
@@ -283,7 +287,8 @@ void circpad_send_padding_cell_for_callback(circpad_machineinfo_t *mi)
  
   // Make sure circuit didn't close on us
   if (mi->on_circ->marked_for_close) {
-    // XXX-MP-AP: tor_log at info?
+    log_fn(LOG_INFO,LD_CIRC,
+           "Padding callback on a circuit marked for close. Ignoring.");
     return;
   }
 
@@ -298,7 +303,9 @@ void circpad_send_padding_cell_for_callback(circpad_machineinfo_t *mi)
 
     // Check that we have at least a 2 hop circuit
     if (circuit_get_cpath_len(TO_ORIGIN_CIRCUIT(mi->on_circ)) < 2) {
-      // XXX-MP-AP: tor_log
+      log_fn(LOG_WARN,LD_CIRC,
+             "Padding callback on one-hop circuit %u",
+             TO_ORIGIN_CIRCUIT(mi->on_circ)->global_identifier);
       return;
     }
 
@@ -309,7 +316,9 @@ void circpad_send_padding_cell_for_callback(circpad_machineinfo_t *mi)
     if (!new_cpath || new_cpath == new_cpath->next ||
         new_cpath->state != CPATH_STATE_OPEN ||
         new_cpath->next->state != CPATH_STATE_OPEN) {
-      // XXX-MP-AP: tor_log.. 
+      log_fn(LOG_WARN,LD_CIRC,
+             "Padding callback on circuit %u without two opened hops.",
+             TO_ORIGIN_CIRCUIT(mi->on_circ)->global_identifier);
       cpath_free_shallow(new_cpath);
       return;
     }
@@ -352,8 +361,8 @@ circpad_send_padding_callback(tor_timer_t *timer, void *args,
     circpad_send_padding_cell_for_callback(mi);
   } else {
     // XXX-MP-AP: This shouldn't happen (represents a handle leak)
-    log_fn(LOG_INFO,LD_OR,
-            "Circuit closed while waiting for timer.");
+    log_fn(LOG_WARN,LD_CIRC,
+            "Circuit closed while waiting for padding timer.");
   }
 
   // XXX-MP-AP: Unify this counter with channelpadding somehow for rephist stats
@@ -498,7 +507,11 @@ void circpad_event_nonpadding_sent(circuit_t *on_circ)
 
       /* Use INT32_MAX to ensure the addition doesn't overflow */
       if (rtt_time >= INT32_MAX) {
-        // XXX-MP-AP: tor_log
+        log_fn(LOG_WARN,LD_CIRC,
+               "Circuit RTT estimate overflowed: "U64_FORMAT
+               " vs "U64_FORMAT, U64_PRINTF_ARG(monotime_absolute_usec(),
+               U64_PRINTF_ARG(
+                 on_circ->padding_info[i]->last_rtt_packet_time_us)));
         continue;
       }
 
