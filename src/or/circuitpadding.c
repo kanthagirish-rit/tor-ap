@@ -8,6 +8,7 @@
 #include "compat_time.h"
 #include "util.h"
 #include "relay.h"
+#include "protover.h"
 
 HANDLE_IMPL(circpad_machineinfo, circpad_machineinfo_t,);
 
@@ -19,7 +20,7 @@ circpad_decision_t circpad_machine_schedule_padding(circpad_machineinfo_t *mi);
 circpad_decision_t circpad_machine_transition(circpad_machineinfo_t *mi,
                                               circpad_transition_t event);
 circpad_machineinfo_t *circpad_machineinfo_new(circuit_t *on_circ, int machine_index);
-    
+
 /* Histogram helpers */
 inline static const circpad_state_t *circpad_machine_current_state(
                                       circpad_machineinfo_t *machine)
@@ -39,7 +40,7 @@ inline static const circpad_state_t *circpad_machine_current_state(
   log_fn(LOG_WARN,LD_CIRC,
          "Invalid circuit padding state %d",
          machine->current_state);
-  BUG(0);
+  tor_fragile_assert();
 }
 
 /**
@@ -102,7 +103,7 @@ inline static uint32_t circpad_machine_sample_delay(circpad_machineinfo_t *mi)
   int i = 0;
   uint32_t curr_weight = 0;
   uint32_t histogram_total = 0;
-  uint32_t bin_choice; 
+  uint32_t bin_choice;
   uint32_t bin_start, bin_end;
 
   tor_assert(state);
@@ -258,7 +259,7 @@ static crypt_path_t *cpath_clone_shallow(crypt_path_t *cpath, int hops)
   if (orig_iter == cpath && i < 2) {
     log_fn(LOG_WARN,LD_CIRC,
            "Trying to do padding on short (one-hop) circuit!");
-    BUG(i >= 2);
+    BUG(i < 2);
   }
 
   return new_head;
@@ -281,10 +282,51 @@ static void cpath_free_shallow(crypt_path_t *cpath)
   }
 }
 
+static int
+circpad_send_command_to_hop(origin_circuit_t *circ, int hopnum,
+                            uint8_t relay_command, const char *payload,
+                            size_t payload_len)
+{
+  crypt_path_t *new_cpath;
+  int ret;
+
+  // Check that we have at least a 2 hop circuit
+  if (circuit_get_cpath_len(circ) < hopnum) {
+    log_fn(LOG_WARN,LD_CIRC,
+           "Circuit %u has %d hops, not %d",
+           circ->global_identifier,
+           circuit_get_cpath_len(circ), hopnum);
+    return -1;
+  }
+
+  /* Prepare a cpath to get us to the middle hop */
+  new_cpath = cpath_clone_shallow(circ->cpath, hopnum);
+
+  // Ensure that our cpath is not short, and we have both hops are open
+  // XXX-MP-AP: move this check into clone?
+  if (!new_cpath || new_cpath == new_cpath->next ||
+      new_cpath->state != CPATH_STATE_OPEN ||
+      new_cpath->next->state != CPATH_STATE_OPEN) {
+    log_fn(LOG_WARN,LD_CIRC,
+           "Padding callback on circuit %u without two opened hops.",
+           circ->global_identifier);
+    cpath_free_shallow(new_cpath);
+    return -1;
+  }
+
+  /* Send the drop command to the second hop */
+  ret = relay_send_command_from_edge(0, TO_CIRCUIT(circ), RELAY_COMMAND_DROP,
+                                     NULL, 0, new_cpath);
+
+  cpath_free_shallow(new_cpath);
+
+  return ret;
+}
+
 void circpad_send_padding_cell_for_callback(circpad_machineinfo_t *mi)
 {
   mi->padding_was_scheduled_at_us = 0;
- 
+
   // Make sure circuit didn't close on us
   if (mi->on_circ->marked_for_close) {
     log_fn(LOG_INFO,LD_CIRC,
@@ -299,34 +341,8 @@ void circpad_send_padding_cell_for_callback(circpad_machineinfo_t *mi)
   }
 
   if (CIRCUIT_IS_ORIGIN(mi->on_circ)) {
-    crypt_path_t *new_cpath;
-
-    // Check that we have at least a 2 hop circuit
-    if (circuit_get_cpath_len(TO_ORIGIN_CIRCUIT(mi->on_circ)) < 2) {
-      log_fn(LOG_WARN,LD_CIRC,
-             "Padding callback on one-hop circuit %u",
-             TO_ORIGIN_CIRCUIT(mi->on_circ)->global_identifier);
-      return;
-    }
-
-    /* Prepare a cpath to get us to the middle hop */
-    new_cpath = cpath_clone_shallow(TO_ORIGIN_CIRCUIT(mi->on_circ)->cpath, 2);
-
-    // Ensure that our cpath is not short, and we have both hops are open
-    if (!new_cpath || new_cpath == new_cpath->next ||
-        new_cpath->state != CPATH_STATE_OPEN ||
-        new_cpath->next->state != CPATH_STATE_OPEN) {
-      log_fn(LOG_WARN,LD_CIRC,
-             "Padding callback on circuit %u without two opened hops.",
-             TO_ORIGIN_CIRCUIT(mi->on_circ)->global_identifier);
-      cpath_free_shallow(new_cpath);
-      return;
-    }
-
-    /* Send the drop command to the second hop */
-    relay_send_command_from_edge(0, mi->on_circ, RELAY_COMMAND_DROP, NULL, 0, new_cpath);
-
-    cpath_free_shallow(new_cpath);
+    circpad_send_command_to_hop(TO_ORIGIN_CIRCUIT(mi->on_circ), 2,
+                                RELAY_COMMAND_DROP, NULL, 0);
   } else {
     // If we're a non-origin circ, we can just send from here as if we're the
     // edge.
@@ -388,7 +404,7 @@ circpad_decision_t circpad_machine_schedule_padding(circpad_machineinfo_t *mi)
   if (mi->padding_was_scheduled_at_us) {
     /* Cancel current timer (if any) */
     timer_disable(mi->padding_timer);
-    mi->padding_was_scheduled_at_us = 0; 
+    mi->padding_was_scheduled_at_us = 0;
   }
 
   in_us = circpad_machine_sample_delay(mi);
@@ -396,7 +412,7 @@ circpad_decision_t circpad_machine_schedule_padding(circpad_machineinfo_t *mi)
   fprintf(stderr, "Padding in %u usec\n", in_us);
 
   if (in_us <= 0) {
-    mi->padding_was_scheduled_at_us = monotime_absolute_usec(); 
+    mi->padding_was_scheduled_at_us = monotime_absolute_usec();
     circpad_send_padding_cell_for_callback(mi);
     return CIRCPAD_PADDING_SENT;
   }
@@ -432,7 +448,7 @@ circpad_decision_t circpad_machine_schedule_padding(circpad_machineinfo_t *mi)
   // XXX-MP-AP: Unify with channelpadding counter
   //rep_hist_padding_count_timers(++total_timers_pending);
 
-  mi->padding_was_scheduled_at_us = monotime_absolute_usec(); 
+  mi->padding_was_scheduled_at_us = monotime_absolute_usec();
 
   return CIRCPAD_PADDING_SCHEDULED;
 }
@@ -464,7 +480,7 @@ circpad_decision_t circpad_machine_transition(circpad_machineinfo_t *mi,
   if (state->transition_reschedule_events & event) {
     return circpad_machine_schedule_padding(mi);
   }
- 
+
   if (state->transition_cancel_events & event) {
     if (mi->padding_was_scheduled_at_us) {
       /* Cancel current timer (if any) */
@@ -478,7 +494,7 @@ circpad_decision_t circpad_machine_transition(circpad_machineinfo_t *mi,
   if (state->transition_next_events & event) {
     mi->current_state = state->next_state;
 
-    fprintf(stderr, "State transition\n");    
+    fprintf(stderr, "State transition\n");
     circpad_machine_setup_tokens(mi);
     return circpad_machine_schedule_padding(mi);
   }
@@ -509,9 +525,9 @@ void circpad_event_nonpadding_sent(circuit_t *on_circ)
       if (rtt_time >= INT32_MAX) {
         log_fn(LOG_WARN,LD_CIRC,
                "Circuit RTT estimate overflowed: "U64_FORMAT
-               " vs "U64_FORMAT, U64_PRINTF_ARG(monotime_absolute_usec(),
+               " vs "U64_FORMAT, U64_PRINTF_ARG(monotime_absolute_usec()),
                U64_PRINTF_ARG(
-                 on_circ->padding_info[i]->last_rtt_packet_time_us)));
+                 on_circ->padding_info[i]->last_rtt_packet_time_us));
         continue;
       }
 
@@ -543,7 +559,7 @@ void circpad_event_padding_sent(circuit_t *on_circ)
   for (int i = 0; i < CIRCPAD_MAX_MACHINES && on_circ->padding_info[i];
        i++) {
     circpad_machine_transition(on_circ->padding_info[i],
-                             CIRCPAD_TRANSITION_ON_PADDING_SENT); 
+                             CIRCPAD_TRANSITION_ON_PADDING_SENT);
   }
 }
 
@@ -552,7 +568,7 @@ void circpad_event_padding_received(circuit_t *on_circ)
   for(int i = 0; i < CIRCPAD_MAX_MACHINES && on_circ->padding_info[i];
       i++) {
     circpad_machine_transition(on_circ->padding_info[i],
-                              CIRCPAD_TRANSITION_ON_PADDING_RECV); 
+                              CIRCPAD_TRANSITION_ON_PADDING_RECV);
   }
 }
 
@@ -573,22 +589,22 @@ void circpad_event_padding_negotiate(circuit_t *circ, cell_t *cell)
   circpad_negotiate_t negotiate;
 
   if (circpad_negotiate_parse(&negotiate, cell->payload+RELAY_HEADER_SIZE,
-                               CELL_SIZE-RELAY_HEADER_SIZE) < 0) {
-    log_fn(LOG_PROTOCOL_WARN, LD_CIRC,
+                               CELL_PAYLOAD_SIZE-RELAY_HEADER_SIZE) < 0) {
+    log_fn(LOG_WARN, LD_CIRC,
           "Received malformed PADDING_NEGOTIATE cell; "
           "dropping.");
 
     return;
   }
 
-  if (negotiate.command == CIRCPAD_STOP) {
+  if (negotiate.command == CIRCPAD_COMMAND_STOP) {
     circpad_machines_free(circ);
-  } else if (negotiate.command == CIRCPAD_START) {
+  } else if (negotiate.command == CIRCPAD_COMMAND_START) {
     // XXX-MP-AP: Support the other machine types..
 
     switch (negotiate.machine_type) {
       case CIRCPAD_MACHINE_CIRC_SETUP:
-        circpad_circ_serv_machine_setup(circ);
+        circpad_circ_responder_machine_setup(circ);
         break;
       case CIRCPAD_MACHINE_HS_CLIENT_INTRO:
         break;
@@ -608,7 +624,7 @@ void circpad_machines_free(circuit_t *circ)
 {
   for (int i = 0; i < CIRCPAD_MAX_MACHINES; i++) {
     circpad_machineinfo_handle_free(circ->padding_handles[i]);
-    
+
     if (circ->padding_info[i]) {
       circpad_machineinfo_handles_clear(circ->padding_info[i]);
       tor_free(circ->padding_info[i]->histogram);
@@ -769,35 +785,37 @@ circpad_circuit_supports_padding(origin_circuit_t *circ)
     return 0;
   }
 
-  return circpad_node_supports_padding(hop); 
+  return circpad_node_supports_padding(hop);
 }
 
 int
 circpad_negotiate_padding(origin_circuit_t *circ, circpad_machine_num_t machine,
-                          int request_echo)
+                          int echo)
 {
-  cell_t cell;
   circpad_negotiate_t type;
+  cell_t cell;
+  ssize_t len;
 
   if (!circpad_circuit_supports_padding(circ)) {
     return 0;
-  } 
+  }
 
-  // XXX-MP-AP: Encode and send a negotiate cell to second hop
 
   memset(&cell, 0, sizeof(cell_t));
-  memset(&disable, 0, sizeof(channelpadding_negotiate_t));
+  memset(&type, 0, sizeof(circpad_negotiate_t));
   cell.command = CELL_RELAY; // XXX-MP-AP: or relay_early? it gets reset, right?
 
-  circpad_negotiate_set_command(&disable, CIRCPAD_COMMAND_START);
+  circpad_negotiate_set_command(&type, CIRCPAD_COMMAND_START);
+  circpad_negotiate_set_version(&type, 0);
+  circpad_negotiate_set_machine_type(&type, machine);
+  circpad_negotiate_set_echo_request(&type, echo);
 
-  if (channelpadding_negotiate_encode(cell.payload, CELL_PAYLOAD_SIZE,
-        &disable) < 0)
+  if ((len = circpad_negotiate_encode(cell.payload, CELL_PAYLOAD_SIZE,
+        &type)) < 0)
     return -1;
 
-  if (chan->write_cell(chan, &cell) == 1)
-    return 0;
-
+  return circpad_send_command_to_hop(circ, 2, RELAY_COMMAND_PADDING_NEGOTIATE,
+                                     cell.payload, len);
 }
 
 /* Serialization */
@@ -813,7 +831,7 @@ static void circpad_state_serialize(const circpad_state_t *state,
 
   smartlist_add_asprintf(chunks, " %u %u 0x%x %u 0x%x 0x%x %u %u",
                          state->start_usec, state->range_sec,
-                         state->transition_prev_events, state->prev_state, 
+                         state->transition_prev_events, state->prev_state,
                          state->transition_reschedule_events,
                          state->transition_next_events, state->next_state,
                          state->remove_tokens);
@@ -827,7 +845,7 @@ char *circpad_machine_to_string(const circpad_machine_t *machine)
   smartlist_add_asprintf(chunks,
                          "0x%x",
                          machine->transition_burst_events);
- 
+
   circpad_state_serialize(&machine->gap, chunks);
   circpad_state_serialize(&machine->burst, chunks);
 

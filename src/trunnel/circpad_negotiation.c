@@ -97,6 +97,21 @@ circpad_negotiate_set_machine_type(circpad_negotiate_t *inp, uint8_t val)
   inp->machine_type = val;
   return 0;
 }
+uint8_t
+circpad_negotiate_get_echo_request(const circpad_negotiate_t *inp)
+{
+  return inp->echo_request;
+}
+int
+circpad_negotiate_set_echo_request(circpad_negotiate_t *inp, uint8_t val)
+{
+  if (! ((val == 0 || val == 1))) {
+     TRUNNEL_SET_ERROR_CODE(inp);
+     return -1;
+  }
+  inp->echo_request = val;
+  return 0;
+}
 const char *
 circpad_negotiate_check(const circpad_negotiate_t *obj)
 {
@@ -107,6 +122,8 @@ circpad_negotiate_check(const circpad_negotiate_t *obj)
   if (! (obj->version == 0))
     return "Integer out of bounds";
   if (! (obj->command == CIRCPAD_COMMAND_START || obj->command == CIRCPAD_COMMAND_STOP))
+    return "Integer out of bounds";
+  if (! (obj->echo_request == 0 || obj->echo_request == 1))
     return "Integer out of bounds";
   return NULL;
 }
@@ -127,6 +144,9 @@ circpad_negotiate_encoded_len(const circpad_negotiate_t *obj)
   result += 1;
 
   /* Length of u8 machine_type */
+  result += 1;
+
+  /* Length of u8 echo_request IN [0, 1] */
   result += 1;
   return result;
 }
@@ -174,6 +194,13 @@ circpad_negotiate_encode(uint8_t *output, const size_t avail, const circpad_nego
   if (avail - written < 1)
     goto truncated;
   trunnel_set_uint8(ptr, (obj->machine_type));
+  written += 1; ptr += 1;
+
+  /* Encode u8 echo_request IN [0, 1] */
+  trunnel_assert(written <= avail);
+  if (avail - written < 1)
+    goto truncated;
+  trunnel_set_uint8(ptr, (obj->echo_request));
   written += 1; ptr += 1;
 
 
@@ -229,6 +256,13 @@ circpad_negotiate_parse_into(circpad_negotiate_t *obj, const uint8_t *input, con
   CHECK_REMAINING(1, truncated);
   obj->machine_type = (trunnel_get_uint8(ptr));
   remaining -= 1; ptr += 1;
+
+  /* Parse u8 echo_request IN [0, 1] */
+  CHECK_REMAINING(1, truncated);
+  obj->echo_request = (trunnel_get_uint8(ptr));
+  remaining -= 1; ptr += 1;
+  if (! (obj->echo_request == 0 || obj->echo_request == 1))
+    goto fail;
   trunnel_assert(ptr + remaining == input + len_in);
   return len_in - remaining;
 

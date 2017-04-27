@@ -11,7 +11,7 @@ const CIRCPAD_MACHINE_WTF_PAD = 5;
    timeout range values, and send padding at that rate (resuming
    if stopped). */
 struct circpad_negotiate {
-  u8 version in [0];
+  u8 version IN [0];
   u8 command IN [CIRCPAD_COMMAND_START, CIRCPAD_COMMAND_STOP];
 
   /* Machine type is left unbounded because we can specify

@@ -13,7 +13,6 @@
 #include "handles.h"
 #include "timers.h"
 
-
 struct circuit_t;
 typedef struct circuit_t circuit_t;
 
@@ -172,8 +171,6 @@ void circpad_event_padding_received(circuit_t *on_circ);
 
 void circpad_event_infinity(circpad_machineinfo_t *mi);
 void circpad_event_bins_empty(circpad_machineinfo_t *mi);
-
-int circpad_node_supports_padding(const node_t *node);
 
 /* Machines for various usecases */
 
