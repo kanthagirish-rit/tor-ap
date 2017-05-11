@@ -9,6 +9,7 @@
 #include "util.h"
 #include "relay.h"
 #include "protover.h"
+#include "nodelist.h"
 
 HANDLE_IMPL(circpad_machineinfo, circpad_machineinfo_t,);
 
@@ -41,6 +42,8 @@ inline static const circpad_state_t *circpad_machine_current_state(
          "Invalid circuit padding state %d",
          machine->current_state);
   tor_fragile_assert();
+
+  return NULL;
 }
 
 /**
@@ -49,8 +52,7 @@ inline static const circpad_state_t *circpad_machine_current_state(
  */
 inline static uint32_t circpad_histogram_bin_us(circpad_machineinfo_t *mi,
                                                 int bin)
-{
-  const circpad_state_t *state = circpad_machine_current_state(mi);
+{ const circpad_state_t *state = circpad_machine_current_state(mi);
   uint32_t start_usec;
 
   if (state->use_rtt_estimate)
@@ -190,7 +192,7 @@ void circpad_machine_remove_closest_token(circpad_machineinfo_t *mi)
   /* First, check if we came before bin 0. In which case, decrement it. */
   if (circpad_histogram_bin_us(mi, 0) > target_bin_us) {
     mi->histogram[0]--;
-    fprintf(stderr, "Token removal: %x %d\n", mi, mi->histogram[0]);
+    fprintf(stderr, "Token removal: %p %d\n", mi, mi->histogram[0]);
   } else {
     /* Otherwise, we need to remove the token from the first bin
      * whose upper bound is greater than the target, and that
@@ -200,7 +202,7 @@ void circpad_machine_remove_closest_token(circpad_machineinfo_t *mi)
       if (circpad_histogram_bin_us(mi, i) > target_bin_us) {
         if (mi->histogram[i-1]) {
           mi->histogram[i-1]--;
-          fprintf(stderr, "Token removal: %x %d\n", mi, mi->histogram[i-1]);
+          fprintf(stderr, "Token removal: %p %d\n", mi, mi->histogram[i-1]);
           break;
         }
       }
@@ -208,7 +210,7 @@ void circpad_machine_remove_closest_token(circpad_machineinfo_t *mi)
 
     // XXX-MP-AP: Hrmm... What to do here? Remove lower, refill, or ignore?
     if (i > mi->histogram_len) {
-      fprintf(stderr, "No more upper tokens: %x\n", mi);
+      fprintf(stderr, "No more upper tokens: %p\n", mi);
     }
   }
 
@@ -284,8 +286,8 @@ static void cpath_free_shallow(crypt_path_t *cpath)
 
 static int
 circpad_send_command_to_hop(origin_circuit_t *circ, int hopnum,
-                            uint8_t relay_command, const char *payload,
-                            size_t payload_len)
+                            uint8_t relay_command, const uint8_t *payload,
+                            ssize_t payload_len)
 {
   crypt_path_t *new_cpath;
   int ret;
@@ -315,8 +317,9 @@ circpad_send_command_to_hop(origin_circuit_t *circ, int hopnum,
   }
 
   /* Send the drop command to the second hop */
-  ret = relay_send_command_from_edge(0, TO_CIRCUIT(circ), RELAY_COMMAND_DROP,
-                                     NULL, 0, new_cpath);
+  ret = relay_send_command_from_edge(0, TO_CIRCUIT(circ), relay_command,
+                                     (const char*)payload, payload_len,
+                                     new_cpath);
 
   cpath_free_shallow(new_cpath);
 
@@ -427,7 +430,8 @@ circpad_decision_t circpad_machine_schedule_padding(circpad_machineinfo_t *mi)
   timeout.tv_sec = in_us/USEC_PER_SEC;
   timeout.tv_usec = (in_us%USEC_PER_SEC);
 
-  fprintf(stderr, "Padding in %u sec, %u usec\n", timeout.tv_sec, timeout.tv_usec);
+  fprintf(stderr, "Padding in %u sec, %u usec\n",
+          (unsigned)timeout.tv_sec, (unsigned)timeout.tv_usec);
 
   if (!mi->on_circ->padding_handles[mi->machine_index]) {
     mi->on_circ->padding_handles[mi->machine_index] =
@@ -586,7 +590,7 @@ void circpad_event_bins_empty(circpad_machineinfo_t *mi)
 
 void circpad_event_padding_negotiate(circuit_t *circ, cell_t *cell)
 {
-  circpad_negotiate_t negotiate;
+  circpad_negotiate_t *negotiate;
 
   if (circpad_negotiate_parse(&negotiate, cell->payload+RELAY_HEADER_SIZE,
                                CELL_PAYLOAD_SIZE-RELAY_HEADER_SIZE) < 0) {
@@ -597,12 +601,12 @@ void circpad_event_padding_negotiate(circuit_t *circ, cell_t *cell)
     return;
   }
 
-  if (negotiate.command == CIRCPAD_COMMAND_STOP) {
+  if (negotiate->command == CIRCPAD_COMMAND_STOP) {
     circpad_machines_free(circ);
-  } else if (negotiate.command == CIRCPAD_COMMAND_START) {
+  } else if (negotiate->command == CIRCPAD_COMMAND_START) {
     // XXX-MP-AP: Support the other machine types..
 
-    switch (negotiate.machine_type) {
+    switch (negotiate->machine_type) {
       case CIRCPAD_MACHINE_CIRC_SETUP:
         circpad_circ_responder_machine_setup(circ);
         break;
@@ -618,6 +622,8 @@ void circpad_event_padding_negotiate(circuit_t *circ, cell_t *cell)
         break;
     }
   }
+
+  circpad_negotiate_free(negotiate);
 }
 
 void circpad_machines_free(circuit_t *circ)

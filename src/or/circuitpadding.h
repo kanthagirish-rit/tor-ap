@@ -13,8 +13,9 @@
 #include "handles.h"
 #include "timers.h"
 
-struct circuit_t;
 typedef struct circuit_t circuit_t;
+typedef struct origin_circuit_t origin_circuit_t;
+typedef struct cell_t cell_t;
 
 typedef enum {
   CIRCPAD_STATE_START = 0,
@@ -196,5 +197,8 @@ void circpad_machines_free(circuit_t *circ);
 char *circpad_machine_to_string(const circpad_machine_t *machine);
 const circpad_machine_t *circpad_string_to_machine(const char *str);
 
+void circpad_event_padding_negotiate(circuit_t *circ, cell_t *cell);
+int circpad_negotiate_padding(origin_circuit_t *circ, circpad_machine_num_t machine,
+                              int echo);
 
 #endif
