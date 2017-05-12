@@ -305,7 +305,8 @@ circpad_send_command_to_hop(origin_circuit_t *circ, int hopnum,
   new_cpath = cpath_clone_shallow(circ->cpath, hopnum);
 
   // Ensure that our cpath is not short, and we have both hops are open
-  // XXX-MP-AP: move this check into clone?
+  // FIXME-MP-AP: move this check into clone? But then it needs to generalize
+  // to more than 2 hops..
   if (!new_cpath || new_cpath == new_cpath->next ||
       new_cpath->state != CPATH_STATE_OPEN ||
       new_cpath->next->state != CPATH_STATE_OPEN) {
@@ -379,12 +380,13 @@ circpad_send_padding_callback(tor_timer_t *timer, void *args,
     assert_circuit_ok(mi->on_circ);
     circpad_send_padding_cell_for_callback(mi);
   } else {
-    // XXX-MP-AP: This shouldn't happen (represents a handle leak)
+    // This shouldn't happen (represents a handle leak)
     log_fn(LOG_WARN,LD_CIRC,
             "Circuit closed while waiting for padding timer.");
+    tor_fragile_assert();
   }
 
-  // XXX-MP-AP: Unify this counter with channelpadding somehow for rephist stats
+  // TODO-MP-AP: Unify this counter with channelpadding somehow for rephist stats
   //total_timers_pending--;
 }
 
@@ -449,7 +451,7 @@ circpad_decision_t circpad_machine_schedule_padding(circpad_machineinfo_t *mi)
   }
   timer_schedule(mi->padding_timer, &timeout);
 
-  // XXX-MP-AP: Unify with channelpadding counter
+  // TODO-MP-AP: Unify with channelpadding counter
   //rep_hist_padding_count_timers(++total_timers_pending);
 
   mi->padding_was_scheduled_at_us = monotime_absolute_usec();
@@ -604,7 +606,7 @@ void circpad_event_padding_negotiate(circuit_t *circ, cell_t *cell)
   if (negotiate->command == CIRCPAD_COMMAND_STOP) {
     circpad_machines_free(circ);
   } else if (negotiate->command == CIRCPAD_COMMAND_START) {
-    // XXX-MP-AP: Support the other machine types..
+    // TODO-MP-AP: Support the other machine types..
 
     switch (negotiate->machine_type) {
       case CIRCPAD_MACHINE_CIRC_SETUP:
