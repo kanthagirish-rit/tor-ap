@@ -822,6 +822,7 @@ circpad_negotiate_padding(origin_circuit_t *circ, circpad_machine_num_t machine,
         &type)) < 0)
     return -1;
 
+  // XXX-MP-AP: Different return here?
   return circpad_send_command_to_hop(circ, 2, RELAY_COMMAND_PADDING_NEGOTIATE,
                                      cell.payload, len);
 }
