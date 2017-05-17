@@ -649,6 +649,9 @@ void circpad_event_padding_negotiate(circuit_t *circ, cell_t *cell)
   }
 
   /* If the other end requested an echo, send one. */
+  /* FIXME-MP-AP: We could instead/additionally just transition
+   * immediately into the burst state...
+   */
   if (negotiate->echo_request) {
     relay_send_command_from_edge(0, circ, RELAY_COMMAND_DROP, NULL, 0, NULL);
   }

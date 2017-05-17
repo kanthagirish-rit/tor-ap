@@ -1591,7 +1591,8 @@ circuit_has_opened(origin_circuit_t *circ)
    * to consider its build time. */
   circ->has_opened = 1;
 
-  // XXX: Send padding negotiation here?
+  // TODO-MP-AP: Clear padding and send new padding negotiation here for
+  // some types of circuits?
 
   switch (TO_CIRCUIT(circ)->purpose) {
     case CIRCUIT_PURPOSE_C_ESTABLISH_REND:

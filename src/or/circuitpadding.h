@@ -45,9 +45,14 @@ typedef enum {
 
 #define CIRCPAD_DELAY_INFINITE  (UINT32_MAX)
 
-// XXX: 100 bytes is probably pretty close to the
-// "malloc overhead makes it not worth it"
+// 100 bytes is probably pretty close to the
+// "malloc overhead makes it not worth it" line
 #define CIRCPAD_MAX_HISTOGRAM_LEN 50
+
+/**
+ * This struct describes the histograms and parameters of a single
+ * state in the adaptive padding machine.
+ */
 typedef struct {
   uint8_t histogram_len;
   uint16_t histogram[CIRCPAD_MAX_HISTOGRAM_LEN];
@@ -84,13 +89,13 @@ typedef struct {
   /* If true, estimate the RTT and use that for the histogram base instead of
    * start_usec.
    *
-   * XXX: Right now this is only supported for relay-side state machines. 
+   * Right now this is only supported for relay-side state machines. 
    */
   uint8_t use_rtt_estimate;
 
   /* If true, remove tokens from the histogram upon padding and
    * non-padding activity. */
-  // XXX: Different removal types? (before, after, lowest, highest?)
+  // TODO-MP-AP: Different removal types? (before, after, lowest, highest?)
   uint8_t remove_tokens;
 } circpad_state_t;
 

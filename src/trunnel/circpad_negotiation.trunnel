@@ -19,6 +19,7 @@ struct circpad_negotiate {
   u8 machine_type;
 
   /* If true, send a relay_drop reply.. */
-  // XXX: Maybe we just say to transition here instead..
+  // FIXME-MP-AP: Maybe we just say to transition to the first state
+  // here instead..
   u8 echo_request IN [0,1];
 };
