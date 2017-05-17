@@ -1,6 +1,7 @@
 /* Copyright (c) 2017 The Tor Project, Inc. */
 /* See LICENSE for licensing information */
 
+#include "channel.h"
 #include "or.h"
 #include "circuitpadding.h"
 #include "circuitlist.h"
@@ -50,9 +51,10 @@ inline static const circpad_state_t *circpad_machine_current_state(
  * Calculate the lower bound of a histogram bin. The upper bound
  * is obtained by calling this function with bin+1, and subtracting 1.
  */
-inline static uint32_t circpad_histogram_bin_us(circpad_machineinfo_t *mi,
-                                                int bin)
-{ const circpad_state_t *state = circpad_machine_current_state(mi);
+inline static uint32_t
+circpad_histogram_bin_us(circpad_machineinfo_t *mi, int bin)
+{
+  const circpad_state_t *state = circpad_machine_current_state(mi);
   uint32_t start_usec;
 
   if (state->use_rtt_estimate)
@@ -208,7 +210,7 @@ void circpad_machine_remove_closest_token(circpad_machineinfo_t *mi)
       }
     }
 
-    // XXX-MP-AP: Hrmm... What to do here? Remove lower, refill, or ignore?
+    // FIXME-MP-AP: Hrmm... What to do here? Remove lower, refill, or ignore?
     if (i > mi->histogram_len) {
       fprintf(stderr, "No more upper tokens: %p\n", mi);
     }
@@ -519,13 +521,15 @@ void circpad_event_nonpadding_sent(circuit_t *on_circ)
                                CIRCPAD_TRANSITION_ON_NONPADDING_SENT);
 
     /* Round trip time estimate (only valid for relay-side machines) */
-    // XXX-MP-AP: This estimate will not make sense for circuits after any
-    // full-duplex activity happens. Should we stop updating it
-    // when the circuit is built? Or after first relay packet? Or after
-    // first back-to-back packet? (yes, that one)
-    if (on_circ->padding_info[i]->last_rtt_packet_time_us) {
+    if (on_circ->padding_info[i]->last_rtt_packet_time_us &&
+        on_circ->padding_info[i]->last_rtt_packet_time_us !=
+        CIRCPAD_STOP_ESTIMATING_RTT) {
       uint64_t rtt_time = monotime_absolute_usec() -
           on_circ->padding_info[i]->last_rtt_packet_time_us;
+
+      /* Reset the last RTT packet time, so we can tell if two
+       * arrive back to back */
+      on_circ->padding_info[i]->last_rtt_packet_time_us = 0;
 
       /* Use INT32_MAX to ensure the addition doesn't overflow */
       if (rtt_time >= INT32_MAX) {
@@ -555,8 +559,27 @@ void circpad_event_nonpadding_received(circuit_t *on_circ)
     circpad_machine_transition(on_circ->padding_info[i],
                                CIRCPAD_TRANSITION_ON_NONPADDING_RECV);
 
-    on_circ->padding_info[i]->last_rtt_packet_time_us
-        = monotime_absolute_usec();
+
+    /* If we already have a last RTT packet time, that means we
+     * did not get a response before this packet. The RTT estimate
+     * only makes sense if we do not have multiple packets on the
+     * wire, so stop estimating if this is the second packet
+     * back to back. */
+    if (on_circ->padding_info[i]->last_rtt_packet_time_us &&
+        on_circ->padding_info[i]->last_rtt_packet_time_us !=
+        CIRCPAD_STOP_ESTIMATING_RTT) {
+      // FIXME: Safelog?
+      log_fn(LOG_INFO, LD_CIRC,
+             "Stopping RTT estimation on circuit ("U64_FORMAT", %d) after "
+             "two back to back packets. Current RTT: %d",
+             U64_PRINTF_ARG(on_circ->n_chan->global_identifier),
+             on_circ->n_circ_id, on_circ->padding_info[i]->rtt_estimate);
+      on_circ->padding_info[i]->last_rtt_packet_time_us
+          = CIRCPAD_STOP_ESTIMATING_RTT;
+    } else {
+      on_circ->padding_info[i]->last_rtt_packet_time_us
+          = monotime_absolute_usec();
+    }
   }
 }
 
@@ -623,6 +646,11 @@ void circpad_event_padding_negotiate(circuit_t *circ, cell_t *cell)
       default:
         break;
     }
+  }
+
+  /* If the other end requested an echo, send one. */
+  if (negotiate->echo_request) {
+    relay_send_command_from_edge(0, circ, RELAY_COMMAND_DROP, NULL, 0, NULL);
   }
 
   circpad_negotiate_free(negotiate);
@@ -796,6 +824,11 @@ circpad_circuit_supports_padding(origin_circuit_t *circ)
   return circpad_node_supports_padding(hop);
 }
 
+/**
+ * Try to negotiate padding.
+ *
+ * Returns 1 if successful (or already set up), 0 otherwise.
+ */
 int
 circpad_negotiate_padding(origin_circuit_t *circ, circpad_machine_num_t machine,
                           int echo)
@@ -804,14 +837,21 @@ circpad_negotiate_padding(origin_circuit_t *circ, circpad_machine_num_t machine,
   cell_t cell;
   ssize_t len;
 
+  // If we have a padding machine, we already did this.
+  if (TO_CIRCUIT(circ)->padding_machine[0]) {
+    return 1;
+  }
+
   if (!circpad_circuit_supports_padding(circ)) {
     return 0;
   }
 
-
   memset(&cell, 0, sizeof(cell_t));
   memset(&type, 0, sizeof(circpad_negotiate_t));
-  cell.command = CELL_RELAY; // XXX-MP-AP: or relay_early? it gets reset, right?
+  // This gets reset to RELAY_EARLY appropriately by
+  // relay_send_command_from_edge_. At least, it looks that way.
+  // QQQ-MP-AP: Verify that.
+  cell.command = CELL_RELAY;
 
   circpad_negotiate_set_command(&type, CIRCPAD_COMMAND_START);
   circpad_negotiate_set_version(&type, 0);
@@ -822,9 +862,25 @@ circpad_negotiate_padding(origin_circuit_t *circ, circpad_machine_num_t machine,
         &type)) < 0)
     return -1;
 
-  // XXX-MP-AP: Different return here?
+  /* Set up our own machine before telling the other side */
+  switch (machine) {
+    case CIRCPAD_MACHINE_CIRC_SETUP:
+      circpad_circ_client_machine_setup(TO_CIRCUIT(circ));
+      break;
+    case CIRCPAD_MACHINE_HS_CLIENT_INTRO:
+      break;
+    case CIRCPAD_MACHINE_HS_SERVICE_INTRO:
+      break;
+    case CIRCPAD_MACHINE_HS_SERVICE_REND:
+      break;
+    case CIRCPAD_MACHINE_WTF_PAD:
+      break;
+    default:
+      break;
+  }
+
   return circpad_send_command_to_hop(circ, 2, RELAY_COMMAND_PADDING_NEGOTIATE,
-                                     cell.payload, len);
+                                     cell.payload, len) == 0;
 }
 
 /* Serialization */

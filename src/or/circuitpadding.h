@@ -115,6 +115,7 @@ typedef struct circpad_machineinfo_t {
    */
   uint64_t padding_was_scheduled_at_us;
 
+#define CIRCPAD_STOP_ESTIMATING_RTT (UINT64_MAX)
   /* The last time we got an event relevant to estimating
    * the RTT. Monotonic time in microseconds since system
    * start.

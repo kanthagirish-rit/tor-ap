@@ -436,9 +436,9 @@ command_process_created_cell(cell_t *cell, channel_t *chan)
       return;
     }
 
-    // XXX-MP-AP: Send padding negotiation here, if the second hop is open?
-    // Advantages: We get to measure RTT earlier. Disadvantage:
-    // The circuit is not open yet and this may cause problems.
+    /* Negotiate circuit setup padding if the middle is open, and it is
+     * supported */
+    circpad_negotiate_padding(origin_circ, CIRCPAD_MACHINE_CIRC_SETUP, 1);
 
     log_debug(LD_OR,"Moving to next skin.");
     if ((err_reason = circuit_send_next_onion_skin(origin_circ)) < 0) {
