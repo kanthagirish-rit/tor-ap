@@ -22,9 +22,12 @@ circpad_decision_t circpad_machine_schedule_padding(circpad_machineinfo_t *mi);
 circpad_decision_t circpad_machine_transition(circpad_machineinfo_t *mi,
                                               circpad_transition_t event);
 circpad_machineinfo_t *circpad_machineinfo_new(circuit_t *on_circ, int machine_index);
+STATIC uint32_t circpad_histogram_bin_us(circpad_machineinfo_t *mi, int bin);
+inline STATIC const circpad_state_t *circpad_machine_current_state(
+                                      circpad_machineinfo_t *machine);
 
 /* Histogram helpers */
-inline static const circpad_state_t *circpad_machine_current_state(
+inline STATIC const circpad_state_t *circpad_machine_current_state(
                                       circpad_machineinfo_t *machine)
 {
   switch (machine->current_state) {
@@ -42,7 +45,7 @@ inline static const circpad_state_t *circpad_machine_current_state(
   log_fn(LOG_WARN,LD_CIRC,
          "Invalid circuit padding state %d",
          machine->current_state);
-  tor_fragile_assert();
+  //tor_fragile_assert();
 
   return NULL;
 }
@@ -51,7 +54,7 @@ inline static const circpad_state_t *circpad_machine_current_state(
  * Calculate the lower bound of a histogram bin. The upper bound
  * is obtained by calling this function with bin+1, and subtracting 1.
  */
-inline static uint32_t
+inline STATIC uint32_t
 circpad_histogram_bin_us(circpad_machineinfo_t *mi, int bin)
 {
   const circpad_state_t *state = circpad_machine_current_state(mi);

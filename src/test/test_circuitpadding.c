@@ -20,10 +20,13 @@ extern networkstatus_t *current_ns_consensus;
 extern networkstatus_t *current_md_consensus;
 
 circid_t get_unique_circ_id_by_chan(channel_t *chan);
+uint32_t circpad_histogram_bin_us(circpad_machineinfo_t *mi, int bin);
 
 static or_circuit_t * new_fake_orcirc(channel_t *nchan, channel_t *pchan);
 channel_t *new_fake_channel(void);
+void test_circuitpadding_negotiation(void *arg);
 
+void test_circuitpadding_rtt(void *arg);
 void test_circuitpadding_circuitsetup_machine(void *arg);
 
 static or_circuit_t *
@@ -122,7 +125,7 @@ circuit_package_relay_cell_mock(cell_t *cell, circuit_t *circ,
     // Pretend a padding cell was sent
     circpad_event_padding_sent(client_side);
 
-    // Receive padding cell at middle 
+    // Receive padding cell at middle
     circpad_event_padding_received(relay_side);
     n_client_cells++;
   } else if (circ == relay_side) {
@@ -142,7 +145,93 @@ circuit_package_relay_cell_mock(cell_t *cell, circuit_t *circ,
   return 0;
 }
 
+void
+test_circuitpadding_rtt(void *arg)
+{
+  /* Test Plan:
+   *
+   * 1. Test RTT measurement server side
+   *    a. test usage of measured RTT
+   * 2. Test termination of RTT measurement
+   *    a. test non-update of RTT
+   * 3. Test client side circuit and non-application of RTT..
+   */
+  uint32_t rtt_estimate;
+  (void)arg;
+
+  // XXX: free these channels
+  relay_side = (circuit_t *)new_fake_orcirc(new_fake_channel(),
+                                            new_fake_channel());
+  relay_side->purpose = CIRCUIT_PURPOSE_OR;
+
+  monotime_init();
+  timers_initialize();
+
+  MOCK(circuit_package_relay_cell,
+       circuit_package_relay_cell_mock);
+  circpad_circ_responder_machine_setup(relay_side);
+
+  /* Test 1: Test measuring RTT */
+  circpad_event_nonpadding_received((circuit_t*)relay_side);
+  tt_int_op(relay_side->padding_info[0]->last_rtt_packet_time_us, OP_NE, 0);
+
+  tor_sleep_msec(2);
+  circpad_event_nonpadding_sent((circuit_t*)relay_side);
+  tt_int_op(relay_side->padding_info[0]->last_rtt_packet_time_us, OP_EQ, 0);
+
+
+  tt_int_op(relay_side->padding_info[0]->rtt_estimate, OP_GE, 1900);
+  tt_int_op(relay_side->padding_info[0]->rtt_estimate, OP_LE, 3000);
+  tt_int_op(circpad_histogram_bin_us(relay_side->padding_info[0], 0),
+            OP_EQ, relay_side->padding_info[0]->rtt_estimate);
+
+  circpad_event_nonpadding_received((circuit_t*)relay_side);
+  tt_int_op(relay_side->padding_info[0]->last_rtt_packet_time_us, OP_NE, 0);
+  tor_sleep_msec(4);
+  circpad_event_nonpadding_sent((circuit_t*)relay_side);
+  tt_int_op(relay_side->padding_info[0]->last_rtt_packet_time_us, OP_EQ, 0);
+
+  tt_int_op(relay_side->padding_info[0]->rtt_estimate, OP_GE, 2900);
+  tt_int_op(relay_side->padding_info[0]->rtt_estimate, OP_LE, 5000);
+  tt_int_op(circpad_histogram_bin_us(relay_side->padding_info[0], 0),
+            OP_EQ, relay_side->padding_info[0]->rtt_estimate);
+
+  /* Test 2: Termination of RTT measurement */
+  rtt_estimate = relay_side->padding_info[0]->rtt_estimate;
+
+  circpad_event_nonpadding_received((circuit_t*)relay_side);
+  circpad_event_nonpadding_received((circuit_t*)relay_side);
+  tor_sleep_msec(4);
+  circpad_event_nonpadding_sent((circuit_t*)relay_side);
+  circpad_event_nonpadding_sent((circuit_t*)relay_side);
+
+  tt_int_op(relay_side->padding_info[0]->rtt_estimate, OP_EQ, rtt_estimate);
+  tt_int_op(relay_side->padding_info[0]->last_rtt_packet_time_us, OP_EQ,
+            CIRCPAD_STOP_ESTIMATING_RTT);
+  tt_int_op(circpad_histogram_bin_us(relay_side->padding_info[0], 0),
+            OP_EQ, relay_side->padding_info[0]->rtt_estimate);
+
+
+done:
+  timers_shutdown();
+  UNMOCK(circuit_package_relay_cell);
+
+  return;
+}
+
 // XXX: test negotiation (write it first)
+void
+test_circuitpadding_negotiation(void *arg)
+{
+  /* Test plan:
+   * 1. Test circuit where padding is unsupported by middle
+   *    a. Make sure padding negotiation is not sent
+   * 2. Test circuit where padding is supported by middle
+   *    a. Make sure padding negotiation is sent
+   *    b. Test padding negotiation delivery and parsing
+   */
+  (void)arg;
+}
 
 static void
 simulate_single_hop_extend(circuit_t *client, circuit_t *mid_relay)
@@ -152,7 +241,7 @@ simulate_single_hop_extend(circuit_t *client, circuit_t *mid_relay)
   // Pretend a non-padding cell was sent
   circpad_event_nonpadding_sent((circuit_t*)client);
 
-  // Receive extend cell at middle 
+  // Receive extend cell at middle
   circpad_event_nonpadding_received((circuit_t*)mid_relay);
 
   // Sleep a tiny bit so we can calculate an RTT
@@ -183,7 +272,7 @@ test_circuitpadding_circuitsetup_machine(void *arg)
 {
   /**
    * Test case plan:
-   * 
+   *
    * 1. Simulate a normal circuit setup pattern
    * 2. Simulate a cannibalized circuit hop addition
    * 3. Simulate a hs intro setup pattern
@@ -315,6 +404,7 @@ test_circuitpadding_circuitsetup_machine(void *arg)
 struct testcase_t circuitpadding_tests[] = {
   //TEST_CIRCUITPADDING(circuitpadding_circuitsetup_machine, 0),
   TEST_CIRCUITPADDING(circuitpadding_circuitsetup_machine, TT_FORK),
+  TEST_CIRCUITPADDING(circuitpadding_rtt, TT_FORK),
   END_OF_TESTCASES
 };
 
