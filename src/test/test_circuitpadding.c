@@ -14,6 +14,8 @@
 #include "relay.h"
 #include "circuitlist.h"
 #include "circuitbuild.h"
+#include "protover.h"
+#include "nodelist.h"
 
 extern smartlist_t *connection_array;
 extern networkstatus_t *current_ns_consensus;
@@ -28,6 +30,48 @@ void test_circuitpadding_negotiation(void *arg);
 
 void test_circuitpadding_rtt(void *arg);
 void test_circuitpadding_circuitsetup_machine(void *arg);
+
+static void
+simulate_single_hop_extend(circuit_t *client, circuit_t *mid_relay, int padding);
+
+static node_t padding_node;
+static node_t non_padding_node;
+
+static void
+nodes_init(void)
+{
+  padding_node.ri = tor_malloc_zero(sizeof(routerinfo_t));
+  padding_node.ri->protocol_list = tor_strdup(protover_get_supported_protocols());
+
+  non_padding_node.ri = tor_malloc_zero(sizeof(routerinfo_t));
+  non_padding_node.ri->protocol_list = tor_strdup("Cons=1-2 Desc=1-2 "
+                                                   "DirCache=1 HSDir=1-2 "
+                                                   "HSIntro=3-4 HSRend=1-2 "
+                                                   "Link=1-4 LinkAuth=1,3 "
+                                                   "Microdesc=1-2 Relay=1-2");
+}
+
+static void
+nodes_free(void)
+{
+  tor_free(padding_node.ri->protocol_list);
+  tor_free(padding_node.ri);
+
+  tor_free(non_padding_node.ri->protocol_list);
+  tor_free(non_padding_node.ri);
+}
+
+static const node_t *
+node_get_by_id_mock(const char *identity_digest)
+{
+  if (identity_digest[0] == 1) {
+    return &padding_node;
+  } else if (identity_digest[0] == 0) {
+    return &non_padding_node;
+  }
+
+  return NULL;
+}
 
 static or_circuit_t *
 new_fake_orcirc(channel_t *nchan, channel_t *pchan)
@@ -124,6 +168,12 @@ circuit_package_relay_cell_mock(cell_t *cell, circuit_t *circ,
     fprintf(stderr, "Client padded\n");
     // Pretend a padding cell was sent
     circpad_event_padding_sent(client_side);
+
+    if (cell->payload[0] == RELAY_COMMAND_PADDING_NEGOTIATE) {
+      fprintf(stderr, "Client sent padding negotiate\n");
+      // Deliver to relay
+      circpad_event_padding_negotiate(relay_side, cell);
+    }
 
     // Receive padding cell at middle
     circpad_event_padding_received(relay_side);
@@ -223,7 +273,8 @@ done:
 void
 test_circuitpadding_negotiation(void *arg)
 {
-  /* Test plan:
+  /**
+   * Test plan:
    * 1. Test circuit where padding is unsupported by middle
    *    a. Make sure padding negotiation is not sent
    * 2. Test circuit where padding is supported by middle
@@ -231,12 +282,60 @@ test_circuitpadding_negotiation(void *arg)
    *    b. Test padding negotiation delivery and parsing
    */
   (void)arg;
+  client_side = (circuit_t *)origin_circuit_new();
+
+  // XXX: free these channels
+  relay_side = (circuit_t *)new_fake_orcirc(new_fake_channel(), new_fake_channel());
+
+  relay_side->purpose = CIRCUIT_PURPOSE_OR;
+  client_side->purpose = CIRCUIT_PURPOSE_C_GENERAL;
+
+  nodes_init();
+  monotime_init();
+  timers_initialize();
+
+  MOCK(node_get_by_id,
+       node_get_by_id_mock);
+
+  MOCK(circuit_package_relay_cell,
+       circuit_package_relay_cell_mock);
+
+
+  /* Build two hops */
+  simulate_single_hop_extend(client_side, relay_side, 1);
+  simulate_single_hop_extend(client_side, relay_side, 1);
+
+  /* Verify no padding yet */
+  tt_ptr_op(relay_side->padding_machine[0], OP_EQ, NULL);
+  tt_int_op(n_relay_cells, OP_EQ, 0);
+  tt_int_op(n_client_cells, OP_EQ, 0);
+
+  /* Try to negotiate padding */
+  circpad_negotiate_padding(TO_ORIGIN_CIRCUIT(client_side),
+                            CIRCPAD_MACHINE_CIRC_SETUP, 1);
+
+  /* verify padding was negotiated */
+  tt_ptr_op(relay_side->padding_machine[0], OP_NE, NULL);
+
+  /* verify echo was sent */
+  tt_int_op(n_relay_cells, OP_EQ, 1);
+  tt_int_op(n_client_cells, OP_EQ, 1);
+
+  /* Finish circuit */
+  simulate_single_hop_extend(client_side, relay_side, 1);
+
+done:
+  UNMOCK(node_get_by_id);
+  UNMOCK(circuit_package_relay_cell);
+  nodes_free();
 }
 
 static void
-simulate_single_hop_extend(circuit_t *client, circuit_t *mid_relay)
+simulate_single_hop_extend(circuit_t *client, circuit_t *mid_relay, int padding)
 {
   char whatevs_key[CPATH_KEY_MATERIAL_LEN];
+  char digest[DIGEST_LEN];
+  tor_addr_t addr;
 
   // Pretend a non-padding cell was sent
   circpad_event_nonpadding_sent((circuit_t*)client);
@@ -259,6 +358,16 @@ simulate_single_hop_extend(circuit_t *client, circuit_t *mid_relay)
 
   hop->magic = CRYPT_PATH_MAGIC;
   hop->state = CPATH_STATE_OPEN;
+
+  // add an extend info to indicate if this node supports padding or not.
+  // (set the first byte of the digest for our mocked node_get_by_id)
+  digest[0] = padding;
+
+  // XXX: Free this..
+  hop->extend_info = extend_info_new(
+          padding ? "padding" : "non-padding",
+          digest, NULL, NULL, NULL,
+          &addr, padding);
 
   // XXX: we need to free this..
   circuit_init_cpath_crypto(hop, whatevs_key, 0);
@@ -301,7 +410,7 @@ test_circuitpadding_circuitsetup_machine(void *arg)
 
   /* Test case #1: Build a 3 hop circuit, then wait and let pad */
   for (int i = 0; i < 3; i++) {
-    simulate_single_hop_extend(client_side, relay_side);
+    simulate_single_hop_extend(client_side, relay_side, 1);
 
     tt_int_op(client_side->padding_info[0]->current_state, OP_EQ,
               CIRCPAD_STATE_BURST);
@@ -403,6 +512,7 @@ test_circuitpadding_circuitsetup_machine(void *arg)
 
 struct testcase_t circuitpadding_tests[] = {
   //TEST_CIRCUITPADDING(circuitpadding_circuitsetup_machine, 0),
+  TEST_CIRCUITPADDING(circuitpadding_negotiation, TT_FORK),
   TEST_CIRCUITPADDING(circuitpadding_circuitsetup_machine, TT_FORK),
   TEST_CIRCUITPADDING(circuitpadding_rtt, TT_FORK),
   END_OF_TESTCASES

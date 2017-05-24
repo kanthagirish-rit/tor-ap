@@ -263,10 +263,10 @@ static crypt_path_t *cpath_clone_shallow(crypt_path_t *cpath, int hops)
   new_curr->next = new_head;
   new_head->prev = new_curr;
 
-  if (orig_iter == cpath && i < 2) {
+  if (orig_iter == cpath && i == 0) {
     log_fn(LOG_WARN,LD_CIRC,
            "Trying to do padding on short (one-hop) circuit!");
-    BUG(i < 2);
+    BUG(i == 0);
   }
 
   return new_head;
@@ -795,7 +795,7 @@ circpad_node_supports_padding(const node_t *node)
     const char *protos = node->ri->protocol_list;
     if (protos == NULL)
       return 0;
-    return protocol_list_supports_protocol(protos, PRT_PADDING, 3);
+    return protocol_list_supports_protocol(protos, PRT_PADDING, 1);
   }
 
   return 0;
@@ -807,7 +807,7 @@ circuit_get_nth_hop(origin_circuit_t *circ, int hop)
   crypt_path_t *iter = circ->cpath;
   int i;
 
-  for (i = 0; i < hop; i++) {
+  for (i = 1; i < hop; i++) {
     iter = iter->next;
 
     // Did we wrap around?
