@@ -28,6 +28,7 @@ static or_circuit_t * new_fake_orcirc(channel_t *nchan, channel_t *pchan);
 channel_t *new_fake_channel(void);
 void test_circuitpadding_negotiation(void *arg);
 
+void test_circuitpadding_serialize(void *arg);
 void test_circuitpadding_rtt(void *arg);
 void test_circuitpadding_circuitsetup_machine(void *arg);
 
@@ -195,6 +196,13 @@ circuit_package_relay_cell_mock(cell_t *cell, circuit_t *circ,
   return 0;
 }
 
+// Test reading and writing padding to strings (or options_t + consensus)
+void
+test_circuitpadding_serialize(void *arg)
+{
+  (void)arg;
+}
+
 void
 test_circuitpadding_rtt(void *arg)
 {
@@ -269,17 +277,17 @@ done:
   return;
 }
 
-// XXX: test negotiation (write it first)
 void
 test_circuitpadding_negotiation(void *arg)
 {
   /**
    * Test plan:
-   * 1. Test circuit where padding is unsupported by middle
-   *    a. Make sure padding negotiation is not sent
-   * 2. Test circuit where padding is supported by middle
+   * 1. Test circuit where padding is supported by middle
    *    a. Make sure padding negotiation is sent
    *    b. Test padding negotiation delivery and parsing
+   * FIXME:
+   * 2. Test circuit where padding is unsupported by middle
+   *    a. Make sure padding negotiation is not sent
    */
   (void)arg;
   client_side = (circuit_t *)origin_circuit_new();
@@ -383,13 +391,11 @@ test_circuitpadding_circuitsetup_machine(void *arg)
    * Test case plan:
    *
    * 1. Simulate a normal circuit setup pattern
-   * 2. Simulate a cannibalized circuit hop addition
-   * 3. Simulate a hs intro setup pattern
-   *    - On-demand
-   *    - Via cannibalize
-   * 4. Simulate a hs rend setup pattern
-   *    - On-demand
-   *    - Via cannibalize
+   *    a. Application traffic
+   *
+   * FIXME: This should focus more on exercising the machine
+   * features rather than actual traffic patterns. For example,
+   * test cancellation and bins empty/refill
    */
   (void)arg;
   client_side = (circuit_t *)origin_circuit_new();
@@ -499,6 +505,9 @@ test_circuitpadding_circuitsetup_machine(void *arg)
             OP_EQ, 0);
 
   fprintf(stderr, "Client %d, relay: %d\n", n_client_cells, n_relay_cells);
+
+  // FIXME: Test refill
+  // FIXME: Test timer cancellation
 
  done:
   timers_shutdown();
