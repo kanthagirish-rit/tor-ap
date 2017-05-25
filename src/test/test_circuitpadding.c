@@ -256,24 +256,24 @@ test_circuitpadding_rtt(void *arg)
   circpad_event_nonpadding_received((circuit_t*)relay_side);
   tt_int_op(relay_side->padding_info[0]->last_rtt_packet_time_us, OP_NE, 0);
 
-  tor_sleep_msec(2);
+  tor_sleep_msec(20);
   circpad_event_nonpadding_sent((circuit_t*)relay_side);
   tt_int_op(relay_side->padding_info[0]->last_rtt_packet_time_us, OP_EQ, 0);
 
 
-  tt_int_op(relay_side->padding_info[0]->rtt_estimate, OP_GE, 1900);
-  tt_int_op(relay_side->padding_info[0]->rtt_estimate, OP_LE, 3000);
+  tt_int_op(relay_side->padding_info[0]->rtt_estimate, OP_GE, 19000);
+  tt_int_op(relay_side->padding_info[0]->rtt_estimate, OP_LE, 30000);
   tt_int_op(circpad_histogram_bin_us(relay_side->padding_info[0], 0),
             OP_EQ, relay_side->padding_info[0]->rtt_estimate);
 
   circpad_event_nonpadding_received((circuit_t*)relay_side);
   tt_int_op(relay_side->padding_info[0]->last_rtt_packet_time_us, OP_NE, 0);
-  tor_sleep_msec(4);
+  tor_sleep_msec(40);
   circpad_event_nonpadding_sent((circuit_t*)relay_side);
   tt_int_op(relay_side->padding_info[0]->last_rtt_packet_time_us, OP_EQ, 0);
 
-  tt_int_op(relay_side->padding_info[0]->rtt_estimate, OP_GE, 2900);
-  tt_int_op(relay_side->padding_info[0]->rtt_estimate, OP_LE, 5000);
+  tt_int_op(relay_side->padding_info[0]->rtt_estimate, OP_GE, 29000);
+  tt_int_op(relay_side->padding_info[0]->rtt_estimate, OP_LE, 50000);
   tt_int_op(circpad_histogram_bin_us(relay_side->padding_info[0], 0),
             OP_EQ, relay_side->padding_info[0]->rtt_estimate);
 
@@ -402,13 +402,11 @@ simulate_single_hop_extend(circuit_t *client, circuit_t *mid_relay, int padding)
   // (set the first byte of the digest for our mocked node_get_by_id)
   digest[0] = padding;
 
-  // XXX: Free this..
   hop->extend_info = extend_info_new(
           padding ? "padding" : "non-padding",
           digest, NULL, NULL, NULL,
           &addr, padding);
 
-  // XXX: we need to free this..
   circuit_init_cpath_crypto(hop, whatevs_key, 0);
 
   hop->package_window = circuit_initial_package_window();
