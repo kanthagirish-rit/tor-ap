@@ -334,7 +334,6 @@ test_circuitpadding_negotiation(void *arg)
   MOCK(circuit_package_relay_cell,
        circuit_package_relay_cell_mock);
 
-
   /* Build two hops */
   simulate_single_hop_extend(client_side, relay_side, 1);
   simulate_single_hop_extend(client_side, relay_side, 1);
@@ -357,6 +356,49 @@ test_circuitpadding_negotiation(void *arg)
 
   /* Finish circuit */
   simulate_single_hop_extend(client_side, relay_side, 1);
+
+  /* Test 2: Test no padding */
+  free_fake_origin_circuit(TO_ORIGIN_CIRCUIT(client_side));
+  free_fake_orcirc(relay_side);
+
+  client_side = (circuit_t *)origin_circuit_new();
+  relay_side = (circuit_t *)new_fake_orcirc(&dummy_channel,
+                                            &dummy_channel);
+  relay_side->purpose = CIRCUIT_PURPOSE_OR;
+  client_side->purpose = CIRCUIT_PURPOSE_C_GENERAL;
+
+  simulate_single_hop_extend(client_side, relay_side, 1);
+  simulate_single_hop_extend(client_side, relay_side, 0);
+
+  /* Verify no padding yet */
+  tt_ptr_op(relay_side->padding_machine[0], OP_EQ, NULL);
+  tt_int_op(n_relay_cells, OP_EQ, 1);
+  tt_int_op(n_client_cells, OP_EQ, 1);
+
+  /* Try to negotiate padding */
+  circpad_negotiate_padding(TO_ORIGIN_CIRCUIT(client_side),
+                            CIRCPAD_MACHINE_CIRC_SETUP, 1);
+
+  /* verify no padding was negotiated */
+  tt_ptr_op(relay_side->padding_machine[0], OP_EQ, NULL);
+
+  /* verify no echo was sent */
+  tt_int_op(n_relay_cells, OP_EQ, 1);
+  tt_int_op(n_client_cells, OP_EQ, 1);
+
+  /* Finish circuit */
+  simulate_single_hop_extend(client_side, relay_side, 1);
+
+  /* Try to negotiate padding */
+  circpad_negotiate_padding(TO_ORIGIN_CIRCUIT(client_side),
+                            CIRCPAD_MACHINE_CIRC_SETUP, 1);
+
+  /* verify no padding was negotiated */
+  tt_ptr_op(relay_side->padding_machine[0], OP_EQ, NULL);
+
+  /* verify no echo was sent */
+  tt_int_op(n_relay_cells, OP_EQ, 1);
+  tt_int_op(n_client_cells, OP_EQ, 1);
 
 done:
 
