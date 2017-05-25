@@ -23,11 +23,11 @@ circpad_decision_t circpad_machine_transition(circpad_machineinfo_t *mi,
                                               circpad_transition_t event);
 circpad_machineinfo_t *circpad_machineinfo_new(circuit_t *on_circ, int machine_index);
 STATIC uint32_t circpad_histogram_bin_us(circpad_machineinfo_t *mi, int bin);
-inline STATIC const circpad_state_t *circpad_machine_current_state(
+STATIC const circpad_state_t *circpad_machine_current_state(
                                       circpad_machineinfo_t *machine);
 
 /* Histogram helpers */
-inline STATIC const circpad_state_t *circpad_machine_current_state(
+STATIC const circpad_state_t *circpad_machine_current_state(
                                       circpad_machineinfo_t *machine)
 {
   switch (machine->current_state) {
@@ -54,7 +54,7 @@ inline STATIC const circpad_state_t *circpad_machine_current_state(
  * Calculate the lower bound of a histogram bin. The upper bound
  * is obtained by calling this function with bin+1, and subtracting 1.
  */
-inline STATIC uint32_t
+STATIC uint32_t
 circpad_histogram_bin_us(circpad_machineinfo_t *mi, int bin)
 {
   const circpad_state_t *state = circpad_machine_current_state(mi);
@@ -103,7 +103,7 @@ static void circpad_machine_setup_tokens(circpad_machineinfo_t *mi)
   memcpy(mi->histogram, state->histogram, sizeof(uint16_t)*state->histogram_len);
 }
 
-inline static uint32_t circpad_machine_sample_delay(circpad_machineinfo_t *mi)
+static uint32_t circpad_machine_sample_delay(circpad_machineinfo_t *mi)
 {
   const circpad_state_t *state = circpad_machine_current_state(mi);
   const uint16_t *histogram = NULL;
@@ -276,17 +276,15 @@ static void cpath_free_shallow(crypt_path_t *cpath)
 {
   crypt_path_t *iter = cpath;
   crypt_path_t *next;
-  crypt_path_t *last;
 
   if (!cpath) return;
- 
-  last = cpath->prev;
 
-  while(iter != last) {
+  do {
     next = iter->next;
     tor_free(iter);
     iter = next;
-  }
+  } while(iter != cpath);
+
 }
 
 static int

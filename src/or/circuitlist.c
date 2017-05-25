@@ -1024,6 +1024,9 @@ circuit_free(circuit_t *circ)
    * "active" checks will be violated. */
   cell_queue_clear(&circ->n_chan_cells);
 
+  /* Free any circuit padding structures */
+  circpad_machines_free(circ);
+
   if (should_free) {
     memwipe(mem, 0xAA, memlen); /* poison memory */
     tor_free(mem);

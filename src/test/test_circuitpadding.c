@@ -34,9 +34,13 @@ void test_circuitpadding_circuitsetup_machine(void *arg);
 
 static void
 simulate_single_hop_extend(circuit_t *client, circuit_t *mid_relay, int padding);
+void free_fake_orcirc(circuit_t *circ);
+void free_fake_origin_circuit(origin_circuit_t *circ);
 
 static node_t padding_node;
 static node_t non_padding_node;
+
+static channel_t dummy_channel;
 
 static void
 nodes_init(void)
@@ -82,10 +86,6 @@ new_fake_orcirc(channel_t *nchan, channel_t *pchan)
   crypt_path_t tmp_cpath;
   char whatevs_key[CPATH_KEY_MATERIAL_LEN];
 
-  // XXX: Hack to get cmux
-  nchan->cmux = circuitmux_alloc();
-  pchan->cmux = circuitmux_alloc();
-
   orcirc = tor_malloc_zero(sizeof(*orcirc));
   circ = &(orcirc->base_);
   circ->magic = OR_CIRCUIT_MAGIC;
@@ -125,6 +125,29 @@ new_fake_orcirc(channel_t *nchan, channel_t *pchan)
 
   return orcirc;
 }
+
+void
+free_fake_orcirc(circuit_t *circ)
+{
+  or_circuit_t *orcirc = TO_OR_CIRCUIT(circ);
+  crypto_digest_free(orcirc->n_digest);
+  crypto_digest_free(orcirc->p_digest);
+
+  crypto_cipher_free(orcirc->n_crypto);
+  crypto_cipher_free(orcirc->p_crypto);
+
+  circpad_machines_free(circ);
+  tor_free(circ);
+}
+
+void
+free_fake_origin_circuit(origin_circuit_t *circ)
+{
+  circpad_machines_free(TO_CIRCUIT(circ));
+  circuit_clear_cpath(circ);
+  tor_free(circ);
+}
+
 
 void dummy_nop_timer(void);
 
@@ -217,9 +240,9 @@ test_circuitpadding_rtt(void *arg)
   uint32_t rtt_estimate;
   (void)arg;
 
-  // XXX: free these channels
-  relay_side = (circuit_t *)new_fake_orcirc(new_fake_channel(),
-                                            new_fake_channel());
+  dummy_channel.cmux = circuitmux_alloc();
+  relay_side = (circuit_t *)new_fake_orcirc(&dummy_channel,
+                                            &dummy_channel);
   relay_side->purpose = CIRCUIT_PURPOSE_OR;
 
   monotime_init();
@@ -271,6 +294,10 @@ test_circuitpadding_rtt(void *arg)
 
 
 done:
+
+  free_fake_orcirc(relay_side);
+  circuitmux_detach_all_circuits(dummy_channel.cmux, NULL);
+  circuitmux_free(dummy_channel.cmux);
   timers_shutdown();
   UNMOCK(circuit_package_relay_cell);
 
@@ -291,13 +318,12 @@ test_circuitpadding_negotiation(void *arg)
    */
   (void)arg;
   client_side = (circuit_t *)origin_circuit_new();
-
-  // XXX: free these channels
-  relay_side = (circuit_t *)new_fake_orcirc(new_fake_channel(), new_fake_channel());
+  dummy_channel.cmux = circuitmux_alloc();
+  relay_side = (circuit_t *)new_fake_orcirc(&dummy_channel,
+                                            &dummy_channel);
 
   relay_side->purpose = CIRCUIT_PURPOSE_OR;
   client_side->purpose = CIRCUIT_PURPOSE_C_GENERAL;
-
   nodes_init();
   monotime_init();
   timers_initialize();
@@ -333,6 +359,11 @@ test_circuitpadding_negotiation(void *arg)
   simulate_single_hop_extend(client_side, relay_side, 1);
 
 done:
+
+  free_fake_origin_circuit(TO_ORIGIN_CIRCUIT(client_side));
+  free_fake_orcirc(relay_side);
+  circuitmux_detach_all_circuits(dummy_channel.cmux, NULL);
+  circuitmux_free(dummy_channel.cmux);
   UNMOCK(node_get_by_id);
   UNMOCK(circuit_package_relay_cell);
   nodes_free();
@@ -398,9 +429,9 @@ test_circuitpadding_circuitsetup_machine(void *arg)
    * test cancellation and bins empty/refill
    */
   (void)arg;
+  dummy_channel.cmux = circuitmux_alloc();
   client_side = (circuit_t *)origin_circuit_new();
-  // XXX: free these channels
-  relay_side = (circuit_t *)new_fake_orcirc(new_fake_channel(), new_fake_channel());
+  relay_side = (circuit_t *)new_fake_orcirc(&dummy_channel, &dummy_channel);
 
   relay_side->purpose = CIRCUIT_PURPOSE_OR;
   client_side->purpose = CIRCUIT_PURPOSE_C_GENERAL;
@@ -510,6 +541,11 @@ test_circuitpadding_circuitsetup_machine(void *arg)
   // FIXME: Test timer cancellation
 
  done:
+  free_fake_origin_circuit(TO_ORIGIN_CIRCUIT(client_side));
+  free_fake_orcirc(relay_side);
+
+  circuitmux_detach_all_circuits(dummy_channel.cmux, NULL);
+  circuitmux_free(dummy_channel.cmux);
   timers_shutdown();
   UNMOCK(circuit_package_relay_cell);
 
