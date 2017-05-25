@@ -23,6 +23,8 @@ extern networkstatus_t *current_md_consensus;
 
 circid_t get_unique_circ_id_by_chan(channel_t *chan);
 uint32_t circpad_histogram_bin_us(circpad_machineinfo_t *mi, int bin);
+const circpad_state_t *circpad_machine_current_state(
+        circpad_machineinfo_t *machine);
 
 static or_circuit_t * new_fake_orcirc(channel_t *nchan, channel_t *pchan);
 channel_t *new_fake_channel(void);
@@ -243,7 +245,9 @@ test_circuitpadding_rtt(void *arg)
   dummy_channel.cmux = circuitmux_alloc();
   relay_side = (circuit_t *)new_fake_orcirc(&dummy_channel,
                                             &dummy_channel);
+  client_side = (circuit_t *)origin_circuit_new();
   relay_side->purpose = CIRCUIT_PURPOSE_OR;
+  client_side->purpose = CIRCUIT_PURPOSE_C_GENERAL;
 
   monotime_init();
   timers_initialize();
@@ -251,6 +255,7 @@ test_circuitpadding_rtt(void *arg)
   MOCK(circuit_package_relay_cell,
        circuit_package_relay_cell_mock);
   circpad_circ_responder_machine_setup(relay_side);
+  circpad_circ_client_machine_setup(client_side);
 
   /* Test 1: Test measuring RTT */
   circpad_event_nonpadding_received((circuit_t*)relay_side);
@@ -292,6 +297,22 @@ test_circuitpadding_rtt(void *arg)
   tt_int_op(circpad_histogram_bin_us(relay_side->padding_info[0], 0),
             OP_EQ, relay_side->padding_info[0]->rtt_estimate);
 
+  /* Test 3: Make sure client side machine properly ignores RTT */
+  circpad_event_nonpadding_received((circuit_t*)client_side);
+  tt_int_op(client_side->padding_info[0]->last_rtt_packet_time_us, OP_NE, 0);
+
+  tor_sleep_msec(20);
+  circpad_event_nonpadding_sent((circuit_t*)client_side);
+  tt_int_op(client_side->padding_info[0]->last_rtt_packet_time_us, OP_EQ, 0);
+
+  tt_int_op(client_side->padding_info[0]->rtt_estimate, OP_GE, 19000);
+  tt_int_op(client_side->padding_info[0]->rtt_estimate, OP_LE, 30000);
+  tt_int_op(circpad_histogram_bin_us(client_side->padding_info[0], 0),
+            OP_NE, client_side->padding_info[0]->rtt_estimate);
+  tt_int_op(circpad_histogram_bin_us(client_side->padding_info[0], 0),
+            OP_EQ,
+            circpad_machine_current_state(
+                client_side->padding_info[0])->start_usec);
 
 done:
 
