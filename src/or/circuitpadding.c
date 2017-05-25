@@ -27,8 +27,8 @@ STATIC const circpad_state_t *circpad_machine_current_state(
                                       circpad_machineinfo_t *machine);
 
 /* Histogram helpers */
-STATIC const circpad_state_t *circpad_machine_current_state(
-                                      circpad_machineinfo_t *machine)
+STATIC const circpad_state_t *
+circpad_machine_current_state(circpad_machineinfo_t *machine)
 {
   switch (machine->current_state) {
     case CIRCPAD_STATE_START:
@@ -77,7 +77,8 @@ circpad_histogram_bin_us(circpad_machineinfo_t *mi, int bin)
  *
  * Called after a state transition, or if the bins are empty.
  */
-static void circpad_machine_setup_tokens(circpad_machineinfo_t *mi)
+static void
+circpad_machine_setup_tokens(circpad_machineinfo_t *mi)
 {
   const circpad_state_t *state = circpad_machine_current_state(mi);
 
@@ -103,7 +104,8 @@ static void circpad_machine_setup_tokens(circpad_machineinfo_t *mi)
   memcpy(mi->histogram, state->histogram, sizeof(uint16_t)*state->histogram_len);
 }
 
-static uint32_t circpad_machine_sample_delay(circpad_machineinfo_t *mi)
+static uint32_t
+circpad_machine_sample_delay(circpad_machineinfo_t *mi)
 {
   const circpad_state_t *state = circpad_machine_current_state(mi);
   const uint16_t *histogram = NULL;
@@ -172,7 +174,8 @@ static uint32_t circpad_machine_sample_delay(circpad_machineinfo_t *mi)
  * last packet, or the next greater bin */
 // TODO-MP-AP: remove from lower bin? lowest bin? closest bin?
 // FIXME-MP-AP: Hidden service circuit machine may need both...
-void circpad_machine_remove_closest_token(circpad_machineinfo_t *mi)
+void
+circpad_machine_remove_closest_token(circpad_machineinfo_t *mi)
 {
   uint64_t current_time = monotime_absolute_usec();
   const circpad_state_t *state = circpad_machine_current_state(mi);
@@ -230,7 +233,8 @@ void circpad_machine_remove_closest_token(circpad_machineinfo_t *mi)
   }
 }
 
-static crypt_path_t *cpath_clone_shallow(crypt_path_t *cpath, int hops)
+static crypt_path_t *
+cpath_clone_shallow(crypt_path_t *cpath, int hops)
 {
   crypt_path_t *new_head = NULL;
   crypt_path_t *new_prev = NULL;
@@ -272,7 +276,8 @@ static crypt_path_t *cpath_clone_shallow(crypt_path_t *cpath, int hops)
   return new_head;
 }
 
-static void cpath_free_shallow(crypt_path_t *cpath)
+static void
+cpath_free_shallow(crypt_path_t *cpath)
 {
   crypt_path_t *iter = cpath;
   crypt_path_t *next;
@@ -330,7 +335,8 @@ circpad_send_command_to_hop(origin_circuit_t *circ, int hopnum,
   return ret;
 }
 
-void circpad_send_padding_cell_for_callback(circpad_machineinfo_t *mi)
+void
+circpad_send_padding_cell_for_callback(circpad_machineinfo_t *mi)
 {
   mi->padding_was_scheduled_at_us = 0;
 
@@ -393,7 +399,8 @@ circpad_send_padding_callback(tor_timer_t *timer, void *args,
   //total_timers_pending--;
 }
 
-circpad_decision_t circpad_machine_schedule_padding(circpad_machineinfo_t *mi)
+circpad_decision_t
+circpad_machine_schedule_padding(circpad_machineinfo_t *mi)
 {
   uint32_t in_us = 0;
   struct timeval timeout;
@@ -462,8 +469,9 @@ circpad_decision_t circpad_machine_schedule_padding(circpad_machineinfo_t *mi)
   return CIRCPAD_PADDING_SCHEDULED;
 }
 
-circpad_decision_t circpad_machine_transition(circpad_machineinfo_t *mi,
-                               circpad_transition_t event)
+circpad_decision_t
+circpad_machine_transition(circpad_machineinfo_t *mi,
+                           circpad_transition_t event)
 {
   const circpad_state_t *state =
       circpad_machine_current_state(mi);
@@ -511,7 +519,8 @@ circpad_decision_t circpad_machine_transition(circpad_machineinfo_t *mi,
   return CIRCPAD_WONTPAD_EVENT;
 }
 
-void circpad_event_nonpadding_sent(circuit_t *on_circ)
+void
+circpad_event_nonpadding_sent(circuit_t *on_circ)
 {
   for (int i = 0; i < CIRCPAD_MAX_MACHINES && on_circ->padding_info[i];
        i++) {
@@ -553,7 +562,8 @@ void circpad_event_nonpadding_sent(circuit_t *on_circ)
   }
 }
 
-void circpad_event_nonpadding_received(circuit_t *on_circ)
+void
+circpad_event_nonpadding_received(circuit_t *on_circ)
 {
   for (int i = 0; i < CIRCPAD_MAX_MACHINES && on_circ->padding_info[i];
       i++) {
@@ -566,6 +576,10 @@ void circpad_event_nonpadding_received(circuit_t *on_circ)
      * only makes sense if we do not have multiple packets on the
      * wire, so stop estimating if this is the second packet
      * back to back. */
+    // XXX: Optimistic data may cause this to cut off before
+    // the connection to the exit is made.. Maybe we set a flag
+    // when this happens so that we know to stop *after* we get
+    // the first response packet?
     if (on_circ->padding_info[i]->last_rtt_packet_time_us &&
         on_circ->padding_info[i]->last_rtt_packet_time_us !=
         CIRCPAD_STOP_ESTIMATING_RTT) {
@@ -584,7 +598,8 @@ void circpad_event_nonpadding_received(circuit_t *on_circ)
   }
 }
 
-void circpad_event_padding_sent(circuit_t *on_circ)
+void
+circpad_event_padding_sent(circuit_t *on_circ)
 {
   for (int i = 0; i < CIRCPAD_MAX_MACHINES && on_circ->padding_info[i];
        i++) {
@@ -593,7 +608,8 @@ void circpad_event_padding_sent(circuit_t *on_circ)
   }
 }
 
-void circpad_event_padding_received(circuit_t *on_circ)
+void
+circpad_event_padding_received(circuit_t *on_circ)
 {
   for(int i = 0; i < CIRCPAD_MAX_MACHINES && on_circ->padding_info[i];
       i++) {
@@ -602,19 +618,22 @@ void circpad_event_padding_received(circuit_t *on_circ)
   }
 }
 
-void circpad_event_infinity(circpad_machineinfo_t *mi)
+void
+circpad_event_infinity(circpad_machineinfo_t *mi)
 {
   circpad_machine_transition(mi, CIRCPAD_TRANSITION_ON_INFINITY);
 }
 
-void circpad_event_bins_empty(circpad_machineinfo_t *mi)
+void
+circpad_event_bins_empty(circpad_machineinfo_t *mi)
 {
   if (!circpad_machine_transition(mi, CIRCPAD_TRANSITION_ON_BINS_EMPTY)) {
     circpad_machine_setup_tokens(mi);
   }
 }
 
-void circpad_event_padding_negotiate(circuit_t *circ, cell_t *cell)
+void
+circpad_event_padding_negotiate(circuit_t *circ, cell_t *cell)
 {
   circpad_negotiate_t *negotiate;
 
@@ -660,7 +679,8 @@ void circpad_event_padding_negotiate(circuit_t *circ, cell_t *cell)
   circpad_negotiate_free(negotiate);
 }
 
-void circpad_machines_free(circuit_t *circ)
+void
+circpad_machines_free(circuit_t *circ)
 {
   for (int i = 0; i < CIRCPAD_MAX_MACHINES; i++) {
     circpad_machineinfo_handle_free(circ->padding_handles[i]);
@@ -674,7 +694,8 @@ void circpad_machines_free(circuit_t *circ)
   }
 }
 
-circpad_machineinfo_t *circpad_machineinfo_new(circuit_t *on_circ, int machine_index)
+circpad_machineinfo_t *
+circpad_machineinfo_new(circuit_t *on_circ, int machine_index)
 {
   circpad_machineinfo_t *mi = tor_malloc_zero(sizeof(circpad_machineinfo_t));
   mi->machine_index = machine_index;
@@ -685,7 +706,8 @@ circpad_machineinfo_t *circpad_machineinfo_new(circuit_t *on_circ, int machine_i
 
 /* Machines for various usecases */
 static circpad_machine_t circ_client_machine;
-void circpad_circ_client_machine_setup(circuit_t *on_circ)
+void
+circpad_circ_client_machine_setup(circuit_t *on_circ)
 {
   /* Free the old machines (if any) */
   circpad_machines_free(on_circ);
@@ -727,7 +749,8 @@ void circpad_circ_client_machine_setup(circuit_t *on_circ)
 }
 
 static circpad_machine_t circ_responder_machine;
-void circpad_circ_responder_machine_setup(circuit_t *on_circ)
+void
+circpad_circ_responder_machine_setup(circuit_t *on_circ)
 {
   /* Free the old machines (if any) */
   circpad_machines_free(on_circ);
@@ -889,8 +912,9 @@ circpad_negotiate_padding(origin_circuit_t *circ, circpad_machine_num_t machine,
 
 /* Serialization */
 // TODO: Should we use keyword=value here? Are there helpers for that?
-static void circpad_state_serialize(const circpad_state_t *state,
-                                    smartlist_t *chunks)
+static void
+circpad_state_serialize(const circpad_state_t *state,
+                        smartlist_t *chunks)
 {
   smartlist_add_asprintf(chunks, " %u", state->histogram[0]);
   for (int i = 1; i < state->histogram_len; i++) {
@@ -906,7 +930,8 @@ static void circpad_state_serialize(const circpad_state_t *state,
                          state->remove_tokens);
 }
 
-char *circpad_machine_to_string(const circpad_machine_t *machine)
+char *
+circpad_machine_to_string(const circpad_machine_t *machine)
 {
   smartlist_t *chunks = smartlist_new();
   char *out;
@@ -926,7 +951,8 @@ char *circpad_machine_to_string(const circpad_machine_t *machine)
 }
 
 // XXX: Writeme
-const circpad_machine_t *circpad_string_to_machine(const char *str)
+const circpad_machine_t *
+circpad_string_to_machine(const char *str)
 {
   (void)str;
   return NULL;

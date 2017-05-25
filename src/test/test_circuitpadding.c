@@ -326,6 +326,17 @@ done:
 }
 
 void
+test_circuitpadding_tokens(void *arg)
+{
+  /** Test plan:
+   *
+   * 1. Tokens are removed upon padding
+   * 2. Tokens are removed upon non-padding (and timers canceled)
+   * 3. Test refill rules
+   */
+}
+
+void
 test_circuitpadding_negotiation(void *arg)
 {
   /**
@@ -333,9 +344,10 @@ test_circuitpadding_negotiation(void *arg)
    * 1. Test circuit where padding is supported by middle
    *    a. Make sure padding negotiation is sent
    *    b. Test padding negotiation delivery and parsing
-   * FIXME:
    * 2. Test circuit where padding is unsupported by middle
    *    a. Make sure padding negotiation is not sent
+   * FIXME: Test the actual relay and circuit functions that
+   * call us. And maybe test the leaky hop delivery?
    */
   (void)arg;
   client_side = (circuit_t *)origin_circuit_new();
