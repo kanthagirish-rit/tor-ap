@@ -36,7 +36,8 @@ void test_circuitpadding_tokens(void *arg);
 void test_circuitpadding_circuitsetup_machine(void *arg);
 
 static void
-simulate_single_hop_extend(circuit_t *client, circuit_t *mid_relay, int padding);
+simulate_single_hop_extend(circuit_t *client, circuit_t *mid_relay,
+                           int padding);
 void free_fake_orcirc(circuit_t *circ);
 void free_fake_origin_circuit(origin_circuit_t *circ);
 
@@ -49,7 +50,8 @@ static void
 nodes_init(void)
 {
   padding_node.ri = tor_malloc_zero(sizeof(routerinfo_t));
-  padding_node.ri->protocol_list = tor_strdup(protover_get_supported_protocols());
+  padding_node.ri->protocol_list =
+                    tor_strdup(protover_get_supported_protocols());
 
   non_padding_node.ri = tor_malloc_zero(sizeof(routerinfo_t));
   non_padding_node.ri->protocol_list = tor_strdup("Cons=1-2 Desc=1-2 "
@@ -150,7 +152,6 @@ free_fake_origin_circuit(origin_circuit_t *circ)
   circuit_clear_cpath(circ);
   tor_free(circ);
 }
-
 
 void dummy_nop_timer(void);
 
@@ -266,7 +267,6 @@ test_circuitpadding_rtt(void *arg)
   circpad_event_nonpadding_sent((circuit_t*)relay_side);
   tt_int_op(relay_side->padding_info[0]->last_rtt_packet_time_us, OP_EQ, 0);
 
-
   tt_int_op(relay_side->padding_info[0]->rtt_estimate, OP_GE, 19000);
   tt_int_op(relay_side->padding_info[0]->rtt_estimate, OP_LE, 30000);
   tt_int_op(circpad_histogram_bin_us(relay_side->padding_info[0], 0),
@@ -314,9 +314,7 @@ test_circuitpadding_rtt(void *arg)
             OP_EQ,
             circpad_machine_current_state(
                 client_side->padding_info[0])->start_usec);
-
-done:
-
+ done:
   free_fake_orcirc(relay_side);
   circuitmux_detach_all_circuits(dummy_channel.cmux, NULL);
   circuitmux_free(dummy_channel.cmux);
@@ -435,8 +433,7 @@ test_circuitpadding_negotiation(void *arg)
   tt_int_op(n_relay_cells, OP_EQ, 1);
   tt_int_op(n_client_cells, OP_EQ, 1);
 
-done:
-
+ done:
   free_fake_origin_circuit(TO_ORIGIN_CIRCUIT(client_side));
   free_fake_orcirc(relay_side);
   circuitmux_detach_all_circuits(dummy_channel.cmux, NULL);
@@ -447,7 +444,8 @@ done:
 }
 
 static void
-simulate_single_hop_extend(circuit_t *client, circuit_t *mid_relay, int padding)
+simulate_single_hop_extend(circuit_t *client, circuit_t *mid_relay,
+                           int padding)
 {
   char whatevs_key[CPATH_KEY_MATERIAL_LEN];
   char digest[DIGEST_LEN];

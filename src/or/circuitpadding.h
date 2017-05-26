@@ -1,4 +1,4 @@
-/* 
+/*
  * Copyright (c) 2017, The Tor Project, Inc. */
 /* See LICENSE for licensing information */
 
@@ -22,7 +22,7 @@ typedef enum {
   CIRCPAD_STATE_BURST,
   CIRCPAD_STATE_GAP,
   CIRCPAD_STATE_END
-} circpad_statenum_t; 
+} circpad_statenum_t;
 
 /**
  * These constants form a bitfield to specify the types of events
@@ -63,7 +63,7 @@ typedef struct {
   /* This is a bitfield that specifies which direction and types
    * of traffic that cause us to abort our scheduled packet and
    * return to waiting for another event from transition_burst_events.
-   */ 
+   */
   circpad_transition_t transition_prev_events;
   circpad_statenum_t prev_state;
 
@@ -89,7 +89,7 @@ typedef struct {
   /* If true, estimate the RTT and use that for the histogram base instead of
    * start_usec.
    *
-   * Right now this is only supported for relay-side state machines. 
+   * Right now this is only supported for relay-side state machines.
    */
   uint8_t use_rtt_estimate;
 
@@ -162,8 +162,8 @@ typedef struct {
 } circpad_machine_t;
 
 typedef enum {
-  CIRCPAD_WONTPAD_EVENT = 0, 
-  CIRCPAD_WONTPAD_CANCELED, 
+  CIRCPAD_WONTPAD_EVENT = 0,
+  CIRCPAD_WONTPAD_CANCELED,
   CIRCPAD_NONPADDING_STATE,
   CIRCPAD_WONTPAD_INFINITY,
   CIRCPAD_PADDING_SCHEDULED,
@@ -204,7 +204,8 @@ char *circpad_machine_to_string(const circpad_machine_t *machine);
 const circpad_machine_t *circpad_string_to_machine(const char *str);
 
 void circpad_event_padding_negotiate(circuit_t *circ, cell_t *cell);
-int circpad_negotiate_padding(origin_circuit_t *circ, circpad_machine_num_t machine,
-                              int echo);
+int circpad_negotiate_padding(origin_circuit_t *circ,
+                              circpad_machine_num_t machine, int echo);
 
 #endif
+

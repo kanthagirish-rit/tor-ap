@@ -21,7 +21,8 @@ void circpad_send_padding_cell_for_callback(circpad_machineinfo_t *mi);
 circpad_decision_t circpad_machine_schedule_padding(circpad_machineinfo_t *mi);
 circpad_decision_t circpad_machine_transition(circpad_machineinfo_t *mi,
                                               circpad_transition_t event);
-circpad_machineinfo_t *circpad_machineinfo_new(circuit_t *on_circ, int machine_index);
+circpad_machineinfo_t *circpad_machineinfo_new(circuit_t *on_circ,
+                                               int machine_index);
 STATIC uint32_t circpad_histogram_bin_us(circpad_machineinfo_t *mi, int bin);
 STATIC const circpad_state_t *circpad_machine_current_state(
                                       circpad_machineinfo_t *machine);
@@ -101,7 +102,8 @@ circpad_machine_setup_tokens(circpad_machineinfo_t *mi)
   }
   mi->histogram_len = state->histogram_len;
 
-  memcpy(mi->histogram, state->histogram, sizeof(uint16_t)*state->histogram_len);
+  memcpy(mi->histogram, state->histogram,
+         sizeof(uint16_t)*state->histogram_len);
 }
 
 static uint32_t
@@ -288,8 +290,7 @@ cpath_free_shallow(crypt_path_t *cpath)
     next = iter->next;
     tor_free(iter);
     iter = next;
-  } while(iter != cpath);
-
+  } while (iter != cpath);
 }
 
 static int
@@ -359,7 +360,8 @@ circpad_send_padding_cell_for_callback(circpad_machineinfo_t *mi)
   } else {
     // If we're a non-origin circ, we can just send from here as if we're the
     // edge.
-    relay_send_command_from_edge(0, mi->on_circ, RELAY_COMMAND_DROP, NULL, 0, NULL);
+    relay_send_command_from_edge(0, mi->on_circ, RELAY_COMMAND_DROP, NULL,
+                                 0, NULL);
   }
 
   /* Check if bins empty. Right now, we're operating under the assumption
@@ -382,7 +384,7 @@ circpad_send_padding_callback(tor_timer_t *timer, void *args,
                               const struct monotime_t *time)
 {
   circpad_machineinfo_t *mi =
-      circpad_machineinfo_handle_get((struct circpad_machineinfo_handle_t*)args);
+    circpad_machineinfo_handle_get((struct circpad_machineinfo_handle_t*)args);
   (void)timer; (void)time;
 
   if (mi && mi->on_circ) {
@@ -395,7 +397,7 @@ circpad_send_padding_callback(tor_timer_t *timer, void *args,
     tor_fragile_assert();
   }
 
-  // TODO-MP-AP: Unify this counter with channelpadding somehow for rephist stats
+  // TODO-MP-AP: Unify this counter with channelpadding for rephist stats
   //total_timers_pending--;
 }
 
@@ -570,7 +572,6 @@ circpad_event_nonpadding_received(circuit_t *on_circ)
     circpad_machine_transition(on_circ->padding_info[i],
                                CIRCPAD_TRANSITION_ON_NONPADDING_RECV);
 
-
     /* If we already have a last RTT packet time, that means we
      * did not get a response before this packet. The RTT estimate
      * only makes sense if we do not have multiple packets on the
@@ -611,8 +612,8 @@ circpad_event_padding_sent(circuit_t *on_circ)
 void
 circpad_event_padding_received(circuit_t *on_circ)
 {
-  for(int i = 0; i < CIRCPAD_MAX_MACHINES && on_circ->padding_info[i];
-      i++) {
+  for (int i = 0; i < CIRCPAD_MAX_MACHINES && on_circ->padding_info[i];
+       i++) {
     circpad_machine_transition(on_circ->padding_info[i],
                               CIRCPAD_TRANSITION_ON_PADDING_RECV);
   }
@@ -778,7 +779,7 @@ circpad_circ_responder_machine_setup(circuit_t *on_circ)
   circ_responder_machine.burst.histogram_len = 1;
   circ_responder_machine.burst.start_usec = 5000;
   circ_responder_machine.burst.range_sec = 10;
-  circ_responder_machine.burst.histogram[0] = 1; // Only infinity for this state
+  circ_responder_machine.burst.histogram[0] = 1; // Only infinity bin here
   circ_responder_machine.burst.histogram_total = 1;
 
   circ_responder_machine.gap.transition_reschedule_events =
@@ -857,8 +858,8 @@ circpad_circuit_supports_padding(origin_circuit_t *circ)
  * Returns 1 if successful (or already set up), 0 otherwise.
  */
 int
-circpad_negotiate_padding(origin_circuit_t *circ, circpad_machine_num_t machine,
-                          int echo)
+circpad_negotiate_padding(origin_circuit_t *circ,
+                          circpad_machine_num_t machine, int echo)
 {
   circpad_negotiate_t type;
   cell_t cell;
@@ -957,3 +958,4 @@ circpad_string_to_machine(const char *str)
   (void)str;
   return NULL;
 }
+
