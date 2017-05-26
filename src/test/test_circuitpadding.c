@@ -32,6 +32,7 @@ void test_circuitpadding_negotiation(void *arg);
 
 void test_circuitpadding_serialize(void *arg);
 void test_circuitpadding_rtt(void *arg);
+void test_circuitpadding_tokens(void *arg);
 void test_circuitpadding_circuitsetup_machine(void *arg);
 
 static void
@@ -328,6 +329,7 @@ done:
 void
 test_circuitpadding_tokens(void *arg)
 {
+  (void)arg;
   /** Test plan:
    *
    * 1. Tokens are removed upon padding
@@ -630,6 +632,7 @@ test_circuitpadding_circuitsetup_machine(void *arg)
 
 struct testcase_t circuitpadding_tests[] = {
   //TEST_CIRCUITPADDING(circuitpadding_circuitsetup_machine, 0),
+  TEST_CIRCUITPADDING(circuitpadding_tokens, TT_FORK),
   TEST_CIRCUITPADDING(circuitpadding_negotiation, TT_FORK),
   TEST_CIRCUITPADDING(circuitpadding_circuitsetup_machine, TT_FORK),
   TEST_CIRCUITPADDING(circuitpadding_rtt, TT_FORK),
