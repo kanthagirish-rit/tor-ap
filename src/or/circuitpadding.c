@@ -478,28 +478,26 @@ circpad_machine_transition(circpad_machineinfo_t *mi,
   const circpad_state_t *state =
       circpad_machine_current_state(mi);
 
+  /* Check start state transitions */
   if (!state) {
-    if (mi->current_state == CIRCPAD_STATE_START &&
-        CIRCPAD_GET_MACHINE(mi)->transition_burst_events & event) {
-      mi->current_state = CIRCPAD_STATE_BURST;
+    if (mi->current_state == CIRCPAD_STATE_START) {
+      if (CIRCPAD_GET_MACHINE(mi)->transition_burst_events & event) {
+        mi->current_state = CIRCPAD_STATE_BURST;
+        circpad_machine_setup_tokens(mi);
+        return circpad_machine_schedule_padding(mi);
+      }
 
-      circpad_machine_setup_tokens(mi);
-      return circpad_machine_schedule_padding(mi);
+      if (CIRCPAD_GET_MACHINE(mi)->transition_gap_events & event) {
+        mi->current_state = CIRCPAD_STATE_GAP;
+        circpad_machine_setup_tokens(mi);
+        return circpad_machine_schedule_padding(mi);
+      }
     }
+
     return CIRCPAD_WONTPAD_EVENT;
   }
 
-  if (state->transition_prev_events & event) {
-    mi->current_state = state->prev_state;
-
-    circpad_machine_setup_tokens(mi);
-    return circpad_machine_schedule_padding(mi);
-  }
-
-  if (state->transition_reschedule_events & event) {
-    return circpad_machine_schedule_padding(mi);
-  }
-
+  /* Check cancel events and cancel any pending padding */
   if (state->transition_cancel_events & event) {
     if (mi->padding_was_scheduled_at_us) {
       /* Cancel current timer (if any) */
@@ -510,12 +508,19 @@ circpad_machine_transition(circpad_machineinfo_t *mi,
     return CIRCPAD_WONTPAD_EVENT;
   }
 
-  if (state->transition_next_events & event) {
-    mi->current_state = state->next_state;
+  /* See if we need to transition to any other states based on this event */
+  for (circpad_statenum_t s = CIRCPAD_STATE_START; s < CIRCPAD_NUM_STATES;
+       s++) {
+    if (state->transition_events[s] & event) {
+      /* If this is not the same state, switch and init tokens,
+       * otherwise just reschedule padding. */
+      if (mi->current_state != s) {
+        mi->current_state = s;
+        circpad_machine_setup_tokens(mi);
+      }
 
-    fprintf(stderr, "State transition\n");
-    circpad_machine_setup_tokens(mi);
-    return circpad_machine_schedule_padding(mi);
+      return circpad_machine_schedule_padding(mi);
+    }
   }
 
   return CIRCPAD_WONTPAD_EVENT;
@@ -722,18 +727,15 @@ circpad_circ_client_machine_setup(circuit_t *on_circ)
   circ_client_machine.transition_burst_events =
     CIRCPAD_TRANSITION_ON_NONPADDING_RECV;
 
-  circ_client_machine.burst.transition_reschedule_events =
+  circ_client_machine.burst.transition_events[CIRCPAD_STATE_BURST] =
     CIRCPAD_TRANSITION_ON_PADDING_RECV |
     CIRCPAD_TRANSITION_ON_NONPADDING_RECV;
 
   circ_client_machine.burst.transition_cancel_events =
     CIRCPAD_TRANSITION_ON_NONPADDING_SENT;
 
-  circ_client_machine.burst.transition_next_events =
+  circ_client_machine.burst.transition_events[CIRCPAD_STATE_END] =
     CIRCPAD_TRANSITION_ON_BINS_EMPTY;
-
-  circ_client_machine.burst.next_state =
-    CIRCPAD_STATE_END;
 
   circ_client_machine.burst.remove_tokens = 1;
 
@@ -766,14 +768,11 @@ circpad_circ_responder_machine_setup(circuit_t *on_circ)
     CIRCPAD_TRANSITION_ON_PADDING_RECV |
     CIRCPAD_TRANSITION_ON_NONPADDING_RECV;
 
-  circ_responder_machine.burst.transition_reschedule_events =
+  circ_responder_machine.burst.transition_events[CIRCPAD_STATE_BURST] =
     CIRCPAD_TRANSITION_ON_NONPADDING_SENT;
 
-  circ_responder_machine.burst.transition_next_events =
+  circ_responder_machine.burst.transition_events[CIRCPAD_STATE_GAP] =
     CIRCPAD_TRANSITION_ON_PADDING_RECV;
-
-  circ_responder_machine.burst.next_state =
-    CIRCPAD_STATE_GAP;
 
   circ_responder_machine.burst.use_rtt_estimate = 1;
   circ_responder_machine.burst.histogram_len = 1;
@@ -782,16 +781,13 @@ circpad_circ_responder_machine_setup(circuit_t *on_circ)
   circ_responder_machine.burst.histogram[0] = 1; // Only infinity bin here
   circ_responder_machine.burst.histogram_total = 1;
 
-  circ_responder_machine.gap.transition_reschedule_events =
+  circ_responder_machine.gap.transition_events[CIRCPAD_STATE_GAP] =
     CIRCPAD_TRANSITION_ON_PADDING_RECV |
     CIRCPAD_TRANSITION_ON_NONPADDING_RECV;
 
-  circ_responder_machine.gap.transition_next_events =
+  circ_responder_machine.gap.transition_events[CIRCPAD_STATE_END] =
     CIRCPAD_TRANSITION_ON_BINS_EMPTY |
     CIRCPAD_TRANSITION_ON_NONPADDING_SENT;
-
-  circ_responder_machine.gap.next_state =
-    CIRCPAD_STATE_END;
 
   // FIXME: Tune this histogram
   circ_responder_machine.gap.use_rtt_estimate = 1;
@@ -923,12 +919,14 @@ circpad_state_serialize(const circpad_state_t *state,
                            state->histogram[i]);
   }
 
+#if 0
   smartlist_add_asprintf(chunks, " %u %u 0x%x %u 0x%x 0x%x %u %u",
                          state->start_usec, state->range_sec,
                          state->transition_prev_events, state->prev_state,
                          state->transition_reschedule_events,
                          state->transition_next_events, state->next_state,
                          state->remove_tokens);
+#endif
 }
 
 char *

@@ -19,10 +19,11 @@ typedef struct cell_t cell_t;
 
 typedef enum {
   CIRCPAD_STATE_START = 0,
-  CIRCPAD_STATE_BURST,
-  CIRCPAD_STATE_GAP,
-  CIRCPAD_STATE_END
+  CIRCPAD_STATE_BURST = 1,
+  CIRCPAD_STATE_GAP = 2,
+  CIRCPAD_STATE_END = 3
 } circpad_statenum_t;
+#define CIRCPAD_NUM_STATES  ((uint8_t)CIRCPAD_STATE_END+1)
 
 /**
  * These constants form a bitfield to specify the types of events
@@ -60,31 +61,19 @@ typedef struct {
   uint32_t start_usec;
   uint16_t range_sec;
 
-  /* This is a bitfield that specifies which direction and types
-   * of traffic that cause us to abort our scheduled packet and
-   * return to waiting for another event from transition_burst_events.
+  /**
+   * This is an array of bitfields that specifies which direction and
+   * types of traffic that cause us to abort our scheduled packet and
+   * switch to the state corresponding to the index of the array.
    */
-  circpad_transition_t transition_prev_events;
-  circpad_statenum_t prev_state;
+  circpad_transition_t transition_events[CIRCPAD_NUM_STATES];
 
-  /* This is a bitfield that specifies which direction and types
-   * of traffic that cause us to remain in the current state: Cancel the
-   * pending padding packet (if any), and schedule another padding
-   * packet from our histogram.
-   */
-  circpad_transition_t transition_reschedule_events;
-
-  /* This is a bitfield that specifies which direction and types
+  /**
+   * This is a bitfield that specifies which direction and types
    * of traffic that cause us to remain in the current state. Cancel the
    * pending padding packet (if any), and then await the next event.
    */
   circpad_transition_t transition_cancel_events;
-
-  /* This is a bitfield that specifies which direction and types
-   * of traffic that cause us to transition to the Gap (or burst)
-   * state. */
-  circpad_transition_t transition_next_events;
-  circpad_statenum_t next_state;
 
   /* If true, estimate the RTT and use that for the histogram base instead of
    * start_usec.
@@ -154,6 +143,7 @@ HANDLE_DECL(circpad_machineinfo, circpad_machineinfo_t,);
 
 typedef struct {
   circpad_transition_t transition_burst_events;
+  circpad_transition_t transition_gap_events;
 
   circpad_state_t burst;
   circpad_state_t gap;
