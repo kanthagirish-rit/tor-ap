@@ -109,15 +109,6 @@ typedef struct circpad_machineinfo_t {
    */
   uint64_t padding_was_scheduled_at_us;
 
-#define CIRCPAD_STOP_ESTIMATING_RTT (UINT64_MAX)
-  /* The last time we got an event relevant to estimating
-   * the RTT. Monotonic time in microseconds since system
-   * start.
-   */
-  uint64_t last_rtt_packet_time_us;
-
-  uint32_t rtt_estimate;
-
   /* A copy of the histogram for the current state. NULL if
    * remove_tokens is false for that state */
   uint16_t *histogram;
@@ -127,6 +118,20 @@ typedef struct circpad_machineinfo_t {
 
   /** What state is this machine in? */
   circpad_statenum_t current_state;
+
+  /* The last time we got an event relevant to estimating
+   * the RTT. Monotonic time in microseconds since system
+   * start.
+   */
+  uint64_t last_rtt_packet_time_us;
+
+  uint32_t rtt_estimate;
+
+  /**
+   * If this is true, we have seen full duplex behavior.
+   * Stop updating the RTT.
+   */
+  uint8_t stop_rtt_update : 1;
 
 #define CIRCPAD_MAX_MACHINES    (2)
   /** Which padding machine index was this for.

@@ -538,9 +538,9 @@ circpad_event_nonpadding_sent(circuit_t *on_circ)
                                CIRCPAD_TRANSITION_ON_NONPADDING_SENT);
 
     /* Round trip time estimate (only valid for relay-side machines) */
-    if (on_circ->padding_info[i]->last_rtt_packet_time_us &&
-        on_circ->padding_info[i]->last_rtt_packet_time_us !=
-        CIRCPAD_STOP_ESTIMATING_RTT) {
+    // FIXME: Should we also stop estimating RTT if we get two "sends"
+    // back-to-back from a relay? Or a "send" without a "received"?
+    if (on_circ->padding_info[i]->last_rtt_packet_time_us) {
       uint64_t rtt_time = monotime_absolute_usec() -
           on_circ->padding_info[i]->last_rtt_packet_time_us;
 
@@ -581,23 +581,21 @@ circpad_event_nonpadding_received(circuit_t *on_circ)
      * did not get a response before this packet. The RTT estimate
      * only makes sense if we do not have multiple packets on the
      * wire, so stop estimating if this is the second packet
-     * back to back. */
-    // XXX: Optimistic data may cause this to cut off before
-    // the connection to the exit is made.. Maybe we set a flag
-    // when this happens so that we know to stop *after* we get
-    // the first response packet?
+     * back to back. However, for the first set of back-to-back
+     * packets, we can wait until the very first one comes back
+     * to us, to measure that RTT (for the response to optimistic
+     * data, for example).
+     */
     if (on_circ->padding_info[i]->last_rtt_packet_time_us &&
-        on_circ->padding_info[i]->last_rtt_packet_time_us !=
-        CIRCPAD_STOP_ESTIMATING_RTT) {
+        !on_circ->padding_info[i]->stop_rtt_update) {
       // FIXME: Safelog?
       log_fn(LOG_INFO, LD_CIRC,
              "Stopping RTT estimation on circuit ("U64_FORMAT", %d) after "
              "two back to back packets. Current RTT: %d",
              U64_PRINTF_ARG(on_circ->n_chan->global_identifier),
              on_circ->n_circ_id, on_circ->padding_info[i]->rtt_estimate);
-      on_circ->padding_info[i]->last_rtt_packet_time_us
-          = CIRCPAD_STOP_ESTIMATING_RTT;
-    } else {
+      on_circ->padding_info[i]->stop_rtt_update = 1;
+    } else if (!on_circ->padding_info[i]->stop_rtt_update) {
       on_circ->padding_info[i]->last_rtt_packet_time_us
           = monotime_absolute_usec();
     }
