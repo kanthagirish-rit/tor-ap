@@ -16,7 +16,7 @@ HANDLE_IMPL(circpad_machineinfo, circpad_machineinfo_t,);
 
 #define USEC_PER_SEC (1000000)
 
-void circpad_machine_remove_closest_token(circpad_machineinfo_t *mi);
+void circpad_machine_remove_token(circpad_machineinfo_t *mi);
 void circpad_send_padding_cell_for_callback(circpad_machineinfo_t *mi);
 circpad_decision_t circpad_machine_schedule_padding(circpad_machineinfo_t *mi);
 circpad_decision_t circpad_machine_transition(circpad_machineinfo_t *mi,
@@ -26,6 +26,10 @@ circpad_machineinfo_t *circpad_machineinfo_new(circuit_t *on_circ,
 STATIC uint32_t circpad_histogram_bin_us(circpad_machineinfo_t *mi, int bin);
 STATIC const circpad_state_t *circpad_machine_current_state(
                                       circpad_machineinfo_t *machine);
+void circpad_machine_remove_lower_token(circpad_machineinfo_t *mi,
+                                        uint64_t target_bin_us);
+void circpad_machine_remove_higher_token(circpad_machineinfo_t *mi,
+                                        uint64_t target_bin_us);
 
 /* Histogram helpers */
 STATIC const circpad_state_t *
@@ -85,7 +89,7 @@ circpad_machine_setup_tokens(circpad_machineinfo_t *mi)
 
   /* If this state doesn't exist, or doesn't have token removal,
    * free any previous state's histogram, and bail */
-  if (!state || !state->remove_tokens) {
+  if (!state || state->token_removal == CIRCPAD_TOKEN_REMOVAL_NONE) {
     if (mi->histogram) {
       tor_free(mi->histogram);
       mi->histogram = NULL;
@@ -119,7 +123,7 @@ circpad_machine_sample_delay(circpad_machineinfo_t *mi)
 
   tor_assert(state);
 
-  if (state->remove_tokens) {
+  if (state->token_removal != CIRCPAD_TOKEN_REMOVAL_NONE) {
     tor_assert(mi->histogram && mi->histogram_len == state->histogram_len);
 
     histogram = mi->histogram;
@@ -150,12 +154,12 @@ circpad_machine_sample_delay(circpad_machineinfo_t *mi)
   tor_assert(histogram[i] > 0);
 
   // Store this index to remove the token upon callback.
-  if (state->remove_tokens) {
+  if (state->token_removal != CIRCPAD_TOKEN_REMOVAL_NONE) {
     mi->chosen_bin = i;
   }
 
   if (i == state->histogram_len-1) {
-    if (state->remove_tokens) {
+    if (state->token_removal != CIRCPAD_TOKEN_REMOVAL_NONE) {
       tor_assert(mi->histogram[i] > 0);
       mi->histogram[i]--;
     }
@@ -172,35 +176,11 @@ circpad_machine_sample_delay(circpad_machineinfo_t *mi)
   return bin_start + crypto_rand_int(bin_end - bin_start);
 }
 
-/* Remove a token from the bin corresponding to the delta since
- * last packet, or the next greater bin */
-// TODO-MP-AP: remove from lower bin? lowest bin? closest bin?
-// FIXME-MP-AP: Hidden service circuit machine may need both...
 void
-circpad_machine_remove_closest_token(circpad_machineinfo_t *mi)
+circpad_machine_remove_higher_token(circpad_machineinfo_t *mi, uint64_t target_bin_us)
 {
-  uint64_t current_time = monotime_absolute_usec();
-  const circpad_state_t *state = circpad_machine_current_state(mi);
-  uint64_t target_bin_us;
-  uint32_t histogram_total = 0;
-
-  if (!mi->padding_was_scheduled_at_us) {
-    return;
-  }
-
-  target_bin_us = current_time - mi->padding_was_scheduled_at_us;
-
-  // Cancel the padding, as this packet is counting instead.
-  mi->padding_was_scheduled_at_us = 0;
-  timer_disable(mi->padding_timer);
-
-  if (!state || !state->remove_tokens)
-    return;
-
-  tor_assert(mi->histogram && mi->histogram_len == state->histogram_len);
-
   /* First, check if we came before bin 0. In which case, decrement it. */
-  if (circpad_histogram_bin_us(mi, 0) > target_bin_us) {
+  if (mi->histogram[0] && circpad_histogram_bin_us(mi, 0) > target_bin_us) {
     mi->histogram[0]--;
     fprintf(stderr, "Token removal: %p %d\n", mi, mi->histogram[0]);
   } else {
@@ -208,6 +188,7 @@ circpad_machine_remove_closest_token(circpad_machineinfo_t *mi)
      * whose upper bound is greater than the target, and that
      * has tokens remaining. */
     int i;
+    // XXX: Remove from the infinity bin?
     for (i = 1; i <= mi->histogram_len; i++) {
       if (circpad_histogram_bin_us(mi, i) > target_bin_us) {
         if (mi->histogram[i-1]) {
@@ -223,10 +204,85 @@ circpad_machine_remove_closest_token(circpad_machineinfo_t *mi)
       fprintf(stderr, "No more upper tokens: %p\n", mi);
     }
   }
+}
+
+void
+circpad_machine_remove_lower_token(circpad_machineinfo_t *mi, uint64_t target_bin_us)
+{
+  /* First, check if we came before bin 0. In which case, decrement it. */
+  if (mi->histogram[0] && circpad_histogram_bin_us(mi, 0) > target_bin_us) {
+    mi->histogram[0]--;
+    fprintf(stderr, "Token removal: %p %d\n", mi, mi->histogram[0]);
+  } else {
+    /* Otherwise, we need to remove the token from the first bin
+     * whose upper bound is lower than the target, and that
+     * has tokens remaining. */
+    int i;
+    // XXX: Remove from the infinity bin?
+    for (i = 1; i <= mi->histogram_len; i++) {
+      if (circpad_histogram_bin_us(mi, i) <= target_bin_us) {
+        if (mi->histogram[i-1]) {
+          mi->histogram[i-1]--;
+          fprintf(stderr, "Token removal: %p %d\n", mi, mi->histogram[i-1]);
+          break;
+        }
+      }
+    }
+
+    // FIXME-MP-AP: Hrmm... What to do here? Remove lower, refill, or ignore?
+    if (i > mi->histogram_len) {
+      fprintf(stderr, "No more lower tokens: %p\n", mi);
+    }
+  }
+}
+
+/* Remove a token from the bin corresponding to the delta since
+ * last packet, or the next greater bin */
+// TODO-MP-AP: remove from lower bin? lowest bin? closest bin?
+// FIXME-MP-AP: Hidden service circuit machine may need both...
+//   - XXX: Damnit, I forget why that was the case. Blah.
+void
+circpad_machine_remove_token(circpad_machineinfo_t *mi)
+{
+  const circpad_state_t *state = circpad_machine_current_state(mi);
+  uint64_t current_time = monotime_absolute_usec();
+  uint64_t target_bin_us;
+  uint32_t histogram_total = 0;
+
+  if (!mi->padding_was_scheduled_at_us) {
+    return;
+  }
+
+  target_bin_us = current_time - mi->padding_was_scheduled_at_us;
+
+  // Cancel the padding, as this packet is counting instead.
+  mi->padding_was_scheduled_at_us = 0;
+  timer_disable(mi->padding_timer);
+
+  if (!state || state->token_removal == CIRCPAD_TOKEN_REMOVAL_NONE)
+    return;
+
+  tor_assert(mi->histogram && mi->histogram_len == state->histogram_len);
+
+  // XXX: Do highest and lowest make any sense?
+  switch(state->token_removal) {
+    case CIRCPAD_TOKEN_REMOVAL_NONE:
+      return;
+    case CIRCPAD_TOKEN_REMOVAL_HIGHEST:
+    case CIRCPAD_TOKEN_REMOVAL_LOWEST:
+    case CIRCPAD_TOKEN_REMOVAL_CLOSEST:
+    case CIRCPAD_TOKEN_REMOVAL_LOWER:
+      circpad_machine_remove_lower_token(mi, target_bin_us);
+      break;
+   case CIRCPAD_TOKEN_REMOVAL_HIGHER:
+      circpad_machine_remove_higher_token(mi, target_bin_us);
+      break;
+  }
 
   /* Check if bins empty. Right now, we're operating under the assumption
    * that this loop is better than the extra space for maintaining a
    * running total in machineinfo */
+  // XXX: Decrement Infinity bin, too?
   for (int b = 0; b < state->histogram_len; b++)
     histogram_total += mi->histogram[b];
 
@@ -532,7 +588,7 @@ circpad_event_nonpadding_sent(circuit_t *on_circ)
   for (int i = 0; i < CIRCPAD_MAX_MACHINES && on_circ->padding_info[i];
        i++) {
 
-    circpad_machine_remove_closest_token(on_circ->padding_info[i]);
+    circpad_machine_remove_token(on_circ->padding_info[i]);
 
     circpad_machine_transition(on_circ->padding_info[i],
                                CIRCPAD_TRANSITION_ON_NONPADDING_SENT);
@@ -673,9 +729,6 @@ circpad_event_padding_negotiate(circuit_t *circ, cell_t *cell)
   }
 
   /* If the other end requested an echo, send one. */
-  /* FIXME-MP-AP: We could instead/additionally just transition
-   * immediately into the burst state...
-   */
   if (negotiate->echo_request) {
     relay_send_command_from_edge(0, circ, RELAY_COMMAND_DROP, NULL, 0, NULL);
   }
@@ -735,7 +788,8 @@ circpad_circ_client_machine_setup(circuit_t *on_circ)
   circ_client_machine.burst.transition_events[CIRCPAD_STATE_END] =
     CIRCPAD_TRANSITION_ON_BINS_EMPTY;
 
-  circ_client_machine.burst.remove_tokens = 1;
+  // FIXME: Is this what we want?
+  circ_client_machine.burst.token_removal = CIRCPAD_TOKEN_REMOVAL_HIGHER;
 
   // FIXME: Tune this histogram
   circ_client_machine.burst.histogram_len = 5;

@@ -46,6 +46,16 @@ typedef enum {
 
 #define CIRCPAD_DELAY_INFINITE  (UINT32_MAX)
 
+typedef enum {
+  CIRCPAD_TOKEN_REMOVAL_NONE = 0,
+  CIRCPAD_TOKEN_REMOVAL_HIGHER = 1,
+  CIRCPAD_TOKEN_REMOVAL_LOWER = 2,
+  CIRCPAD_TOKEN_REMOVAL_CLOSEST = 3,
+  CIRCPAD_TOKEN_REMOVAL_HIGHEST = 4,
+  CIRCPAD_TOKEN_REMOVAL_LOWEST = 5
+} circpad_removal_t;
+
+
 // 100 bytes is probably pretty close to the
 // "malloc overhead makes it not worth it" line
 #define CIRCPAD_MAX_HISTOGRAM_LEN 50
@@ -84,8 +94,7 @@ typedef struct {
 
   /* If true, remove tokens from the histogram upon padding and
    * non-padding activity. */
-  // TODO-MP-AP: Different removal types? (before, after, lowest, highest?)
-  uint8_t remove_tokens;
+  circpad_removal_t token_removal;
 } circpad_state_t;
 
 /**
