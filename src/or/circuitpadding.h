@@ -50,11 +50,8 @@ typedef enum {
   CIRCPAD_TOKEN_REMOVAL_NONE = 0,
   CIRCPAD_TOKEN_REMOVAL_HIGHER = 1,
   CIRCPAD_TOKEN_REMOVAL_LOWER = 2,
-  CIRCPAD_TOKEN_REMOVAL_CLOSEST = 3,
-  CIRCPAD_TOKEN_REMOVAL_HIGHEST = 4,
-  CIRCPAD_TOKEN_REMOVAL_LOWEST = 5
+  CIRCPAD_TOKEN_REMOVAL_CLOSEST = 3
 } circpad_removal_t;
-
 
 // 100 bytes is probably pretty close to the
 // "malloc overhead makes it not worth it" line

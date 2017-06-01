@@ -23,13 +23,19 @@ circpad_decision_t circpad_machine_transition(circpad_machineinfo_t *mi,
                                               circpad_transition_t event);
 circpad_machineinfo_t *circpad_machineinfo_new(circuit_t *on_circ,
                                                int machine_index);
-STATIC uint32_t circpad_histogram_bin_us(circpad_machineinfo_t *mi, int bin);
+STATIC uint32_t circpad_histogram_bin_to_usec(circpad_machineinfo_t *mi,
+                                              int bin);
+STATIC int circpad_histogram_usec_to_bin(circpad_machineinfo_t *mi,
+                                              uint32_t us);
+
 STATIC const circpad_state_t *circpad_machine_current_state(
                                       circpad_machineinfo_t *machine);
 void circpad_machine_remove_lower_token(circpad_machineinfo_t *mi,
                                         uint64_t target_bin_us);
 void circpad_machine_remove_higher_token(circpad_machineinfo_t *mi,
                                         uint64_t target_bin_us);
+void circpad_machine_remove_closest_token(circpad_machineinfo_t *mi,
+                                          uint64_t target_bin_us);
 
 /* Histogram helpers */
 STATIC const circpad_state_t *
@@ -60,7 +66,7 @@ circpad_machine_current_state(circpad_machineinfo_t *machine)
  * is obtained by calling this function with bin+1, and subtracting 1.
  */
 STATIC uint32_t
-circpad_histogram_bin_us(circpad_machineinfo_t *mi, int bin)
+circpad_histogram_bin_to_usec(circpad_machineinfo_t *mi, int bin)
 {
   const circpad_state_t *state = circpad_machine_current_state(mi);
   uint32_t start_usec;
@@ -75,6 +81,35 @@ circpad_histogram_bin_us(circpad_machineinfo_t *mi, int bin)
 
   return start_usec
       + (state->range_sec*USEC_PER_SEC)/(1<<(state->histogram_len-bin));
+}
+
+/**
+ * Calculate the bin that contains the usec argument.
+ * "Contains" is defined as us in [lower, upper).
+ */
+STATIC int
+circpad_histogram_usec_to_bin(circpad_machineinfo_t *mi, uint32_t us)
+{
+  const circpad_state_t *state = circpad_machine_current_state(mi);
+  uint32_t start_usec;
+  int bin;
+
+  if (state->use_rtt_estimate)
+    start_usec = mi->rtt_estimate;
+  else
+    start_usec = state->start_usec;
+
+  if (us <= start_usec)
+    return 0;
+
+  bin = state->histogram_len -
+    tor_log2((state->range_sec*USEC_PER_SEC)/(us-start_usec+1))-1;
+
+  if (bin >= state->histogram_len || bin < 0) {
+    // XXX: Log
+    bin = MIN(MAX(bin, 0), state->histogram_len-1);
+  }
+  return bin;
 }
 
 /**
@@ -169,69 +204,153 @@ circpad_machine_sample_delay(circpad_machineinfo_t *mi)
 
   tor_assert(i < state->histogram_len - 1);
 
-  bin_start = circpad_histogram_bin_us(mi, i);
-  bin_end = circpad_histogram_bin_us(mi, i+1);
+  bin_start = circpad_histogram_bin_to_usec(mi, i);
+  bin_end = circpad_histogram_bin_to_usec(mi, i+1);
 
   // Sample uniformly between histogram[i] to histogram[i+1]-1
   return bin_start + crypto_rand_int(bin_end - bin_start);
 }
 
+/**
+ * Find the index of the first bin whose upper bound is
+ * greater than the target, and that has tokens remaining.
+ *
+ * XXX: Why uint64_t here but uint32_t elsewhere? We should
+ * stick to one. Do we really need 64 bits? Maybe..
+ */
+static int
+circpad_machine_first_higher_index(circpad_machineinfo_t *mi,
+                                   uint64_t target_bin_us)
+{
+  int i = circpad_histogram_usec_to_bin(mi, target_bin_us);
+
+  if (i < 0)
+    return mi->histogram_len;
+
+  /* Don't remove from the infinity bin */
+  for (; i < mi->histogram_len-1; i++) {
+    if (mi->histogram[i] &&
+        circpad_histogram_bin_to_usec(mi, i+1) > target_bin_us) {
+      return i;
+    }
+  }
+
+  return mi->histogram_len;
+}
+
+/**
+ * Find the index of the first bin whose lower bound is
+ * lower than the target, and that has tokens remaining.
+ */
+static int
+circpad_machine_first_lower_index(circpad_machineinfo_t *mi,
+                                  uint64_t target_bin_us)
+{
+  int i = circpad_histogram_usec_to_bin(mi, target_bin_us);
+
+  /* Don't remove from the infinity bin */
+  if (i >= mi->histogram_len-1) {
+    i = mi->histogram_len-2;
+  }
+
+  for (; i >= 0; i--) {
+    if (mi->histogram[i] &&
+        circpad_histogram_bin_to_usec(mi, i) <= target_bin_us) {
+      return i;
+    }
+  }
+
+  return -1;
+}
+
 void
-circpad_machine_remove_higher_token(circpad_machineinfo_t *mi, uint64_t target_bin_us)
+circpad_machine_remove_higher_token(circpad_machineinfo_t *mi,
+                                    uint64_t target_bin_us)
 {
   /* First, check if we came before bin 0. In which case, decrement it. */
-  if (mi->histogram[0] && circpad_histogram_bin_us(mi, 0) > target_bin_us) {
+  if (mi->histogram[0] &&
+      circpad_histogram_bin_to_usec(mi, 0) > target_bin_us) {
     mi->histogram[0]--;
     fprintf(stderr, "Token removal: %p %d\n", mi, mi->histogram[0]);
   } else {
     /* Otherwise, we need to remove the token from the first bin
      * whose upper bound is greater than the target, and that
      * has tokens remaining. */
-    int i;
-    // XXX: Remove from the infinity bin?
-    for (i = 1; i <= mi->histogram_len; i++) {
-      if (circpad_histogram_bin_us(mi, i) > target_bin_us) {
-        if (mi->histogram[i-1]) {
-          mi->histogram[i-1]--;
-          fprintf(stderr, "Token removal: %p %d\n", mi, mi->histogram[i-1]);
-          break;
-        }
-      }
-    }
+    int i = circpad_machine_first_higher_index(mi, target_bin_us);
 
-    // FIXME-MP-AP: Hrmm... What to do here? Remove lower, refill, or ignore?
-    if (i > mi->histogram_len) {
+    if (i == mi->histogram_len) {
       fprintf(stderr, "No more upper tokens: %p\n", mi);
+    } else {
+      tor_assert(mi->histogram[i]);
+      mi->histogram[i]--;
     }
   }
 }
 
 void
-circpad_machine_remove_lower_token(circpad_machineinfo_t *mi, uint64_t target_bin_us)
+circpad_machine_remove_lower_token(circpad_machineinfo_t *mi,
+                                   uint64_t target_bin_us)
 {
   /* First, check if we came before bin 0. In which case, decrement it. */
-  if (mi->histogram[0] && circpad_histogram_bin_us(mi, 0) > target_bin_us) {
+  if (mi->histogram[0] &&
+      circpad_histogram_bin_to_usec(mi, 0) > target_bin_us) {
     mi->histogram[0]--;
     fprintf(stderr, "Token removal: %p %d\n", mi, mi->histogram[0]);
   } else {
     /* Otherwise, we need to remove the token from the first bin
      * whose upper bound is lower than the target, and that
      * has tokens remaining. */
-    int i;
-    // XXX: Remove from the infinity bin?
-    for (i = 1; i <= mi->histogram_len; i++) {
-      if (circpad_histogram_bin_us(mi, i) <= target_bin_us) {
-        if (mi->histogram[i-1]) {
-          mi->histogram[i-1]--;
-          fprintf(stderr, "Token removal: %p %d\n", mi, mi->histogram[i-1]);
-          break;
-        }
-      }
-    }
+    int i = circpad_machine_first_lower_index(mi, target_bin_us);
 
-    // FIXME-MP-AP: Hrmm... What to do here? Remove lower, refill, or ignore?
-    if (i > mi->histogram_len) {
+    if (i == -1) {
       fprintf(stderr, "No more lower tokens: %p\n", mi);
+    } else {
+      tor_assert(mi->histogram[i]);
+      mi->histogram[i]--;
+    }
+  }
+}
+
+void
+circpad_machine_remove_closest_token(circpad_machineinfo_t *mi,
+                                     uint64_t target_bin_us)
+{
+  /* First, check if we came before bin 0. In which case, decrement it. */
+  if (mi->histogram[0] &&
+      circpad_histogram_bin_to_usec(mi, 0) > target_bin_us) {
+    mi->histogram[0]--;
+    fprintf(stderr, "Token removal: %p %d\n", mi, mi->histogram[0]);
+  } else {
+    int lower = circpad_machine_first_lower_index(mi, target_bin_us);
+    int higher = circpad_machine_first_higher_index(mi, target_bin_us);
+    int current = circpad_histogram_usec_to_bin(mi, target_bin_us);
+
+    tor_assert(lower <= current);
+    tor_assert(higher >= current);
+
+    if (higher == mi->histogram_len && lower == -1) {
+      // Bins are empty
+      return;
+    } else if (higher == mi->histogram_len) {
+      // Higher bins are empty
+      tor_assert(mi->histogram[lower]);
+      mi->histogram[lower]--;
+      return;
+    } else if (lower == -1) {
+      // Lower bins are empty
+      tor_assert(mi->histogram[higher]);
+      mi->histogram[higher]--;
+      return;
+    } else if (current - lower > higher - current) {
+      // Higher bin is closer
+      tor_assert(mi->histogram[higher]);
+      mi->histogram[higher]--;
+      return;
+    } else {
+      // Lower bin is closer
+      tor_assert(mi->histogram[lower]);
+      mi->histogram[lower]--;
+      return;
     }
   }
 }
@@ -264,13 +383,11 @@ circpad_machine_remove_token(circpad_machineinfo_t *mi)
 
   tor_assert(mi->histogram && mi->histogram_len == state->histogram_len);
 
-  // XXX: Do highest and lowest make any sense?
-  switch(state->token_removal) {
+  switch (state->token_removal) {
     case CIRCPAD_TOKEN_REMOVAL_NONE:
       return;
-    case CIRCPAD_TOKEN_REMOVAL_HIGHEST:
-    case CIRCPAD_TOKEN_REMOVAL_LOWEST:
     case CIRCPAD_TOKEN_REMOVAL_CLOSEST:
+      circpad_machine_remove_closest_token(mi, target_bin_us);
     case CIRCPAD_TOKEN_REMOVAL_LOWER:
       circpad_machine_remove_lower_token(mi, target_bin_us);
       break;
@@ -282,7 +399,7 @@ circpad_machine_remove_token(circpad_machineinfo_t *mi)
   /* Check if bins empty. Right now, we're operating under the assumption
    * that this loop is better than the extra space for maintaining a
    * running total in machineinfo */
-  // XXX: Decrement Infinity bin, too?
+  // XXX: Count Infinity bin, too?
   for (int b = 0; b < state->histogram_len; b++)
     histogram_total += mi->histogram[b];
 

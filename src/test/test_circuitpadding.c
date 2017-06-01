@@ -21,10 +21,21 @@ extern smartlist_t *connection_array;
 extern networkstatus_t *current_ns_consensus;
 extern networkstatus_t *current_md_consensus;
 
+#define USEC_PER_SEC (1000000)
 circid_t get_unique_circ_id_by_chan(channel_t *chan);
-uint32_t circpad_histogram_bin_us(circpad_machineinfo_t *mi, int bin);
+uint32_t circpad_histogram_bin_to_usec(circpad_machineinfo_t *mi,
+                                       int bin);
+int circpad_histogram_usec_to_bin(circpad_machineinfo_t *mi,
+                                       uint32_t us);
+
 const circpad_state_t *circpad_machine_current_state(
         circpad_machineinfo_t *machine);
+void circpad_circ_token_machine_setup(circuit_t *on_circ);
+
+circpad_machineinfo_t *circpad_machineinfo_new(circuit_t *on_circ,
+                                               int machine_index);
+void circpad_machine_remove_higher_token(circpad_machineinfo_t *mi,
+                                         uint64_t target_bin_us);
 
 static or_circuit_t * new_fake_orcirc(channel_t *nchan, channel_t *pchan);
 channel_t *new_fake_channel(void);
@@ -269,7 +280,7 @@ test_circuitpadding_rtt(void *arg)
 
   tt_int_op(relay_side->padding_info[0]->rtt_estimate, OP_GE, 19000);
   tt_int_op(relay_side->padding_info[0]->rtt_estimate, OP_LE, 30000);
-  tt_int_op(circpad_histogram_bin_us(relay_side->padding_info[0], 0),
+  tt_int_op(circpad_histogram_bin_to_usec(relay_side->padding_info[0], 0),
             OP_EQ, relay_side->padding_info[0]->rtt_estimate);
 
   circpad_event_nonpadding_received((circuit_t*)relay_side);
@@ -282,7 +293,7 @@ test_circuitpadding_rtt(void *arg)
 
   tt_int_op(relay_side->padding_info[0]->rtt_estimate, OP_GE, 29000);
   tt_int_op(relay_side->padding_info[0]->rtt_estimate, OP_LE, 50000);
-  tt_int_op(circpad_histogram_bin_us(relay_side->padding_info[0], 0),
+  tt_int_op(circpad_histogram_bin_to_usec(relay_side->padding_info[0], 0),
             OP_EQ, relay_side->padding_info[0]->rtt_estimate);
 
   /* Test 2: Termination of RTT measurement (from the previous test) */
@@ -296,7 +307,7 @@ test_circuitpadding_rtt(void *arg)
   tt_int_op(relay_side->padding_info[0]->rtt_estimate, OP_EQ, rtt_estimate);
   tt_int_op(relay_side->padding_info[0]->last_rtt_packet_time_us, OP_EQ, 0);
   tt_int_op(relay_side->padding_info[0]->stop_rtt_update, OP_EQ, 1);
-  tt_int_op(circpad_histogram_bin_us(relay_side->padding_info[0], 0),
+  tt_int_op(circpad_histogram_bin_to_usec(relay_side->padding_info[0], 0),
             OP_EQ, relay_side->padding_info[0]->rtt_estimate);
 
   /* Test 3: Make sure client side machine properly ignores RTT */
@@ -309,9 +320,9 @@ test_circuitpadding_rtt(void *arg)
 
   tt_int_op(client_side->padding_info[0]->rtt_estimate, OP_GE, 19000);
   tt_int_op(client_side->padding_info[0]->rtt_estimate, OP_LE, 30000);
-  tt_int_op(circpad_histogram_bin_us(client_side->padding_info[0], 0),
+  tt_int_op(circpad_histogram_bin_to_usec(client_side->padding_info[0], 0),
             OP_NE, client_side->padding_info[0]->rtt_estimate);
-  tt_int_op(circpad_histogram_bin_us(client_side->padding_info[0], 0),
+  tt_int_op(circpad_histogram_bin_to_usec(client_side->padding_info[0], 0),
             OP_EQ,
             circpad_machine_current_state(
                 client_side->padding_info[0])->start_usec);
@@ -325,16 +336,145 @@ test_circuitpadding_rtt(void *arg)
   return;
 }
 
+static circpad_machine_t circ_client_machine;
+void
+circpad_circ_token_machine_setup(circuit_t *on_circ)
+{
+  /* Free the old machines (if any) */
+  circpad_machines_free(on_circ);
+
+  on_circ->padding_machine[0] = &circ_client_machine;
+  on_circ->padding_info[0] = circpad_machineinfo_new(on_circ, 0);
+
+  if (circ_client_machine.is_initialized)
+    return;
+
+  circ_client_machine.transition_burst_events =
+    CIRCPAD_TRANSITION_ON_NONPADDING_RECV;
+
+  circ_client_machine.burst.transition_events[CIRCPAD_STATE_BURST] =
+    CIRCPAD_TRANSITION_ON_PADDING_RECV |
+    CIRCPAD_TRANSITION_ON_NONPADDING_RECV;
+
+  circ_client_machine.burst.transition_cancel_events =
+    CIRCPAD_TRANSITION_ON_NONPADDING_SENT;
+
+  circ_client_machine.burst.transition_events[CIRCPAD_STATE_END] =
+    CIRCPAD_TRANSITION_ON_BINS_EMPTY;
+
+  // FIXME: Is this what we want?
+  circ_client_machine.burst.token_removal = CIRCPAD_TOKEN_REMOVAL_HIGHER;
+
+  // FIXME: Tune this histogram
+  circ_client_machine.burst.histogram_len = 5;
+  circ_client_machine.burst.start_usec = 500;
+  circ_client_machine.burst.range_sec = 1;
+  circ_client_machine.burst.histogram[0] = 1;
+  circ_client_machine.burst.histogram[1] = 2;
+  circ_client_machine.burst.histogram[2] = 3;
+  circ_client_machine.burst.histogram[3] = 2;
+  circ_client_machine.burst.histogram[4] = 1;
+  circ_client_machine.burst.histogram_total = 9;
+
+  circ_client_machine.is_initialized = 1;
+
+  return;
+}
+
 void
 test_circuitpadding_tokens(void *arg)
 {
+  const circpad_state_t *state;
+  circpad_machineinfo_t *mi;
   (void)arg;
+
   /** Test plan:
    *
-   * 1. Tokens are removed upon padding
-   * 2. Tokens are removed upon non-padding (and timers canceled)
-   * 3. Test refill rules
+   * 1. Test symmetry between bin_to_usec and usec_to_bin
+   *    a. Test conversion
+   *    b. Test edge transitions (lower, upper)
+   * 2. Test remove higher on an empty bin
+   *    a. Normal bin
+   *    b. Infinity bin
+   *    c. Bin 0
+   *    d. No higher
+   * 3. Test remove lower
+   *    a. Normal bin
+   *    b. Bin 0
+   *    c. No lower
+   * 4. Test remove closest
+   *    a. Closest lower
+   *    b. Closest higher
+   *    c. Closest 0
+   *    d. Closest Infinity
    */
+  client_side = (circuit_t *)origin_circuit_new();
+  client_side->purpose = CIRCUIT_PURPOSE_C_GENERAL;
+
+  monotime_init();
+  timers_initialize();
+
+  circpad_circ_token_machine_setup(client_side);
+
+  mi = client_side->padding_info[0];
+
+  // Pretend a non-padding cell was sent
+  circpad_event_nonpadding_sent((circuit_t*)client_side);
+  circpad_event_nonpadding_received((circuit_t*)client_side);
+  tt_int_op(client_side->padding_info[0]->current_state, OP_EQ,
+            CIRCPAD_STATE_BURST);
+
+  state = circpad_machine_current_state(client_side->padding_info[0]);
+
+  // Test 1: converting usec->bin->usec->usec
+  for (uint32_t i = state->start_usec;
+           i < state->start_usec + state->range_sec*USEC_PER_SEC;
+           i++) {
+    int bin = circpad_histogram_usec_to_bin(client_side->padding_info[0],
+                                            i);
+    uint32_t usec = circpad_histogram_bin_to_usec(client_side->padding_info[0],
+                                                  bin);
+    int bin2 = circpad_histogram_usec_to_bin(client_side->padding_info[0],
+                                             usec);
+    tt_int_op(bin, OP_EQ, bin2);
+  }
+
+  // XXX: Test edge transitions
+  fprintf(stderr, "Bin: %d\n",
+          circpad_histogram_usec_to_bin(mi,
+              circpad_histogram_bin_to_usec(mi, 1)-1));
+  fprintf(stderr, "Bin: %d\n",
+          circpad_histogram_usec_to_bin(mi,
+              circpad_histogram_bin_to_usec(mi, 1)));
+  fprintf(stderr, "Bin: %d\n",
+          circpad_histogram_usec_to_bin(mi,
+              circpad_histogram_bin_to_usec(mi, 1)+1));
+
+  /* 2.a. Normal higher bin */
+  {
+    tt_int_op(mi->histogram[1], OP_EQ, 2);
+    tt_int_op(mi->histogram[2], OP_EQ, 3);
+    circpad_machine_remove_higher_token(mi,
+         circpad_histogram_bin_to_usec(mi, 1)+1);
+    tt_int_op(mi->histogram[2], OP_EQ, 3);
+    tt_int_op(mi->histogram[1], OP_EQ, 1);
+
+    circpad_machine_remove_higher_token(mi,
+         circpad_histogram_bin_to_usec(mi, 1)+1);
+    tt_int_op(mi->histogram[1], OP_EQ, 0);
+
+    tt_int_op(mi->histogram[2], OP_EQ, 3);
+    circpad_machine_remove_higher_token(mi,
+         circpad_histogram_bin_to_usec(mi, 1)+1);
+    tt_int_op(mi->histogram[2], OP_EQ, 2);
+  }
+
+  /* 2.b. Higher Infinity bin */
+  /* 2.c. Bin 0 */
+  /* 2.d. No higher */
+
+ done:
+  free_fake_origin_circuit(TO_ORIGIN_CIRCUIT(client_side));
 }
 
 void
