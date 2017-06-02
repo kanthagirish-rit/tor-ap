@@ -533,23 +533,66 @@ test_circuitpadding_tokens(void *arg)
     tt_int_op(mi->histogram[2], OP_EQ, 0);
   }
 
-  circpad_machine_setup_tokens(mi);
-
   /* 4. Test remove closest
    *    a. Closest lower
    *    b. Closest higher
    *    c. Closest 0
    *    d. Closest Infinity
    */
+  circpad_machine_setup_tokens(mi);
+  tt_int_op(mi->histogram[2], OP_EQ, 2);
   circpad_machine_remove_closest_token(mi,
-         circpad_histogram_bin_to_usec(mi, 3)+1, 1);
+         circpad_histogram_bin_to_usec(mi, 2)+1, 0);
+  circpad_machine_remove_closest_token(mi,
+         circpad_histogram_bin_to_usec(mi, 2)+1, 0);
+  tt_int_op(mi->histogram[2], OP_EQ, 0);
+  tt_int_op(mi->histogram[3], OP_EQ, 2);
+  circpad_machine_remove_closest_token(mi,
+         circpad_histogram_bin_to_usec(mi, 2)+1, 0);
+  circpad_machine_remove_closest_token(mi,
+         circpad_histogram_bin_to_usec(mi, 2)+1, 0);
+  tt_int_op(mi->histogram[3], OP_EQ, 0);
+  tt_int_op(mi->histogram[0], OP_EQ, 1);
+  circpad_machine_remove_closest_token(mi,
+         circpad_histogram_bin_to_usec(mi, 2)+1, 0);
+  tt_int_op(mi->histogram[0], OP_EQ, 0);
+  tt_int_op(mi->histogram[4], OP_EQ, 2);
+  circpad_machine_remove_closest_token(mi,
+         circpad_histogram_bin_to_usec(mi, 2)+1, 0);
+  tt_int_op(mi->histogram[4], OP_EQ, 2);
 
   /* 5. Test remove closest usec
-   *    a. Closest lower (below midpoint)
-   *    b. Closest higher (above midpoint)
-   *    c. Closest 0
+   *    a. Closest 0
+   *    b. Closest lower (below midpoint)
+   *    c. Closest higher (above midpoint)
    *    d. Closest Infinity
    */
+  circpad_machine_setup_tokens(mi);
+
+  tt_int_op(mi->histogram[0], OP_EQ, 1);
+  circpad_machine_remove_closest_token(mi,
+         circpad_histogram_bin_to_usec(mi, 0)/3, 1);
+  tt_int_op(mi->histogram[0], OP_EQ, 0);
+  tt_int_op(mi->histogram[2], OP_EQ, 2);
+  circpad_machine_remove_closest_token(mi,
+         circpad_histogram_bin_to_usec(mi, 0)/3, 1);
+  circpad_machine_remove_closest_token(mi,
+         circpad_histogram_bin_to_usec(mi, 0)/3, 1);
+  tt_int_op(mi->histogram[2], OP_EQ, 0);
+  tt_int_op(mi->histogram[3], OP_EQ, 2);
+  circpad_machine_remove_closest_token(mi,
+         circpad_histogram_bin_to_usec(mi, 4), 1);
+  circpad_machine_remove_closest_token(mi,
+         circpad_histogram_bin_to_usec(mi, 4), 1);
+  tt_int_op(mi->histogram[3], OP_EQ, 0);
+  tt_int_op(mi->histogram[4], OP_EQ, 2);
+  circpad_machine_remove_closest_token(mi,
+         circpad_histogram_bin_to_usec(mi, 4), 1);
+  circpad_machine_remove_closest_token(mi,
+         circpad_histogram_bin_to_usec(mi, 4), 1);
+  tt_int_op(mi->histogram[4], OP_EQ, 2);
+
+  // XXX: Need more coverage of the actual usec branches
 
  done:
   free_fake_origin_circuit(TO_ORIGIN_CIRCUIT(client_side));
