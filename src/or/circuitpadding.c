@@ -35,7 +35,9 @@ void circpad_machine_remove_lower_token(circpad_machineinfo_t *mi,
 void circpad_machine_remove_higher_token(circpad_machineinfo_t *mi,
                                         uint64_t target_bin_us);
 void circpad_machine_remove_closest_token(circpad_machineinfo_t *mi,
-                                          uint64_t target_bin_us);
+                                          uint64_t target_bin_us,
+                                          int use_usec);
+STATIC void circpad_machine_setup_tokens(circpad_machineinfo_t *mi);
 
 /* Histogram helpers */
 STATIC const circpad_state_t *
@@ -106,7 +108,7 @@ circpad_histogram_usec_to_bin(circpad_machineinfo_t *mi, uint32_t us)
     tor_log2((state->range_sec*USEC_PER_SEC)/(us-start_usec+1))-1;
 
   if (bin >= state->histogram_len || bin < 0) {
-    // XXX: Log
+    // XXX: Log, but only if less than 0. > histogram_len can happen..
     bin = MIN(MAX(bin, 0), state->histogram_len-1);
   }
   return bin;
@@ -117,7 +119,7 @@ circpad_histogram_usec_to_bin(circpad_machineinfo_t *mi, uint32_t us)
  *
  * Called after a state transition, or if the bins are empty.
  */
-static void
+STATIC void
 circpad_machine_setup_tokens(circpad_machineinfo_t *mi)
 {
   const circpad_state_t *state = circpad_machine_current_state(mi);
@@ -194,10 +196,13 @@ circpad_machine_sample_delay(circpad_machineinfo_t *mi)
   }
 
   if (i == state->histogram_len-1) {
+    fprintf(stderr, "Infinity pad!\n");
     if (state->token_removal != CIRCPAD_TOKEN_REMOVAL_NONE) {
       tor_assert(mi->histogram[i] > 0);
       mi->histogram[i]--;
     }
+
+    // XXX: bins could be empty here..
 
     return CIRCPAD_DELAY_INFINITE; // Infinity: Don't send a padding packet
   }
@@ -267,23 +272,16 @@ void
 circpad_machine_remove_higher_token(circpad_machineinfo_t *mi,
                                     uint64_t target_bin_us)
 {
-  /* First, check if we came before bin 0. In which case, decrement it. */
-  if (mi->histogram[0] &&
-      circpad_histogram_bin_to_usec(mi, 0) > target_bin_us) {
-    mi->histogram[0]--;
-    fprintf(stderr, "Token removal: %p %d\n", mi, mi->histogram[0]);
-  } else {
-    /* Otherwise, we need to remove the token from the first bin
-     * whose upper bound is greater than the target, and that
-     * has tokens remaining. */
-    int i = circpad_machine_first_higher_index(mi, target_bin_us);
+  /* We need to remove the token from the first bin
+   * whose upper bound is greater than the target, and that
+   * has tokens remaining. */
+  int i = circpad_machine_first_higher_index(mi, target_bin_us);
 
-    if (i == mi->histogram_len) {
-      fprintf(stderr, "No more upper tokens: %p\n", mi);
-    } else {
-      tor_assert(mi->histogram[i]);
-      mi->histogram[i]--;
-    }
+  if (i == mi->histogram_len) {
+    fprintf(stderr, "No more upper tokens: %p\n", mi);
+  } else {
+    tor_assert(mi->histogram[i]);
+    mi->histogram[i]--;
   }
 }
 
@@ -313,7 +311,8 @@ circpad_machine_remove_lower_token(circpad_machineinfo_t *mi,
 
 void
 circpad_machine_remove_closest_token(circpad_machineinfo_t *mi,
-                                     uint64_t target_bin_us)
+                                     uint64_t target_bin_us,
+                                     int use_usec)
 {
   /* First, check if we came before bin 0. In which case, decrement it. */
   if (mi->histogram[0] &&
@@ -324,6 +323,8 @@ circpad_machine_remove_closest_token(circpad_machineinfo_t *mi,
     int lower = circpad_machine_first_lower_index(mi, target_bin_us);
     int higher = circpad_machine_first_higher_index(mi, target_bin_us);
     int current = circpad_histogram_usec_to_bin(mi, target_bin_us);
+    uint64_t lower_us;
+    uint64_t higher_us;
 
     tor_assert(lower <= current);
     tor_assert(higher >= current);
@@ -341,16 +342,47 @@ circpad_machine_remove_closest_token(circpad_machineinfo_t *mi,
       tor_assert(mi->histogram[higher]);
       mi->histogram[higher]--;
       return;
-    } else if (current - lower > higher - current) {
-      // Higher bin is closer
-      tor_assert(mi->histogram[higher]);
-      mi->histogram[higher]--;
-      return;
+    }
+
+    if (use_usec) {
+      lower_us = (circpad_histogram_bin_to_usec(mi, lower) +
+                  circpad_histogram_bin_to_usec(mi, lower+1))/2;
+      higher_us = (circpad_histogram_bin_to_usec(mi, higher) +
+                  circpad_histogram_bin_to_usec(mi, higher+1))/2;
+
+      if (target_bin_us < lower_us) {
+        // Lower bin is closer
+        tor_assert(mi->histogram[lower]);
+        mi->histogram[lower]--;
+        return;
+      } else if (target_bin_us > higher_us) {
+        // Higher bin is closer
+        tor_assert(mi->histogram[higher]);
+        mi->histogram[higher]--;
+        return;
+      } else if (target_bin_us - lower_us > higher_us - target_bin_us) {
+        // Higher bin is closer
+        tor_assert(mi->histogram[higher]);
+        mi->histogram[higher]--;
+        return;
+      } else {
+        // Lower bin is closer
+        tor_assert(mi->histogram[lower]);
+        mi->histogram[lower]--;
+        return;
+      }
     } else {
-      // Lower bin is closer
-      tor_assert(mi->histogram[lower]);
-      mi->histogram[lower]--;
-      return;
+      if (current - lower > higher - current) {
+        // Higher bin is closer
+        tor_assert(mi->histogram[higher]);
+        mi->histogram[higher]--;
+        return;
+      } else {
+        // Lower bin is closer
+        tor_assert(mi->histogram[lower]);
+        mi->histogram[lower]--;
+        return;
+      }
     }
   }
 }
@@ -386,12 +418,14 @@ circpad_machine_remove_token(circpad_machineinfo_t *mi)
   switch (state->token_removal) {
     case CIRCPAD_TOKEN_REMOVAL_NONE:
       return;
+    case CIRCPAD_TOKEN_REMOVAL_CLOSEST_USEC:
+      circpad_machine_remove_closest_token(mi, target_bin_us, 1);
     case CIRCPAD_TOKEN_REMOVAL_CLOSEST:
-      circpad_machine_remove_closest_token(mi, target_bin_us);
+      circpad_machine_remove_closest_token(mi, target_bin_us, 0);
     case CIRCPAD_TOKEN_REMOVAL_LOWER:
       circpad_machine_remove_lower_token(mi, target_bin_us);
       break;
-   case CIRCPAD_TOKEN_REMOVAL_HIGHER:
+    case CIRCPAD_TOKEN_REMOVAL_HIGHER:
       circpad_machine_remove_higher_token(mi, target_bin_us);
       break;
   }
@@ -399,7 +433,6 @@ circpad_machine_remove_token(circpad_machineinfo_t *mi)
   /* Check if bins empty. Right now, we're operating under the assumption
    * that this loop is better than the extra space for maintaining a
    * running total in machineinfo */
-  // XXX: Count Infinity bin, too?
   for (int b = 0; b < state->histogram_len; b++)
     histogram_total += mi->histogram[b];
 
@@ -765,7 +798,8 @@ circpad_event_nonpadding_received(circuit_t *on_circ)
       log_fn(LOG_INFO, LD_CIRC,
              "Stopping RTT estimation on circuit ("U64_FORMAT", %d) after "
              "two back to back packets. Current RTT: %d",
-             U64_PRINTF_ARG(on_circ->n_chan->global_identifier),
+             U64_PRINTF_ARG(on_circ->n_chan ?
+                 on_circ->n_chan->global_identifier : 0),
              on_circ->n_circ_id, on_circ->padding_info[i]->rtt_estimate);
       on_circ->padding_info[i]->stop_rtt_update = 1;
     } else if (!on_circ->padding_info[i]->stop_rtt_update) {
@@ -798,7 +832,26 @@ circpad_event_padding_received(circuit_t *on_circ)
 void
 circpad_event_infinity(circpad_machineinfo_t *mi)
 {
+  circpad_statenum_t state = mi->current_state;
   circpad_machine_transition(mi, CIRCPAD_TRANSITION_ON_INFINITY);
+
+  // If we didn't transition, send bins_empty if empty..
+  // XXX-MP-AP: This is kind of a hacky way to detect transition...
+  // Maybe the transition function should return transition information
+  // instead of padding decisions..
+  if (state == mi->current_state) {
+    if (mi->histogram && mi->histogram_len) {
+      uint32_t histogram_total = 0;
+
+      for (int b = 0; b < mi->histogram_len; b++)
+        histogram_total += mi->histogram[b];
+
+      if (histogram_total == 0) {
+        fprintf(stderr, "Bins empty after infnity!\n");
+        circpad_event_bins_empty(mi);
+      }
+    }
+  }
 }
 
 void

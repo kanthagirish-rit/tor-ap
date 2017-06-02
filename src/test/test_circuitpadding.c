@@ -36,6 +36,12 @@ circpad_machineinfo_t *circpad_machineinfo_new(circuit_t *on_circ,
                                                int machine_index);
 void circpad_machine_remove_higher_token(circpad_machineinfo_t *mi,
                                          uint64_t target_bin_us);
+void circpad_machine_remove_lower_token(circpad_machineinfo_t *mi,
+                                         uint64_t target_bin_us);
+void circpad_machine_remove_closest_token(circpad_machineinfo_t *mi,
+                                         uint64_t target_bin_us,
+                                         int use_usec);
+STATIC void circpad_machine_setup_tokens(circpad_machineinfo_t *mi);
 
 static or_circuit_t * new_fake_orcirc(channel_t *nchan, channel_t *pchan);
 channel_t *new_fake_channel(void);
@@ -359,9 +365,6 @@ circpad_circ_token_machine_setup(circuit_t *on_circ)
   circ_client_machine.burst.transition_cancel_events =
     CIRCPAD_TRANSITION_ON_NONPADDING_SENT;
 
-  circ_client_machine.burst.transition_events[CIRCPAD_STATE_END] =
-    CIRCPAD_TRANSITION_ON_BINS_EMPTY;
-
   // FIXME: Is this what we want?
   circ_client_machine.burst.token_removal = CIRCPAD_TOKEN_REMOVAL_HIGHER;
 
@@ -370,10 +373,10 @@ circpad_circ_token_machine_setup(circuit_t *on_circ)
   circ_client_machine.burst.start_usec = 500;
   circ_client_machine.burst.range_sec = 1;
   circ_client_machine.burst.histogram[0] = 1;
-  circ_client_machine.burst.histogram[1] = 2;
-  circ_client_machine.burst.histogram[2] = 3;
+  circ_client_machine.burst.histogram[1] = 0;
+  circ_client_machine.burst.histogram[2] = 2;
   circ_client_machine.burst.histogram[3] = 2;
-  circ_client_machine.burst.histogram[4] = 1;
+  circ_client_machine.burst.histogram[4] = 2;
   circ_client_machine.burst.histogram_total = 9;
 
   circ_client_machine.is_initialized = 1;
@@ -419,6 +422,7 @@ test_circuitpadding_tokens(void *arg)
   mi = client_side->padding_info[0];
 
   // Pretend a non-padding cell was sent
+  // XXX: This messes us up..
   circpad_event_nonpadding_sent((circuit_t*)client_side);
   circpad_event_nonpadding_received((circuit_t*)client_side);
   tt_int_op(client_side->padding_info[0]->current_state, OP_EQ,
@@ -452,26 +456,100 @@ test_circuitpadding_tokens(void *arg)
 
   /* 2.a. Normal higher bin */
   {
-    tt_int_op(mi->histogram[1], OP_EQ, 2);
-    tt_int_op(mi->histogram[2], OP_EQ, 3);
-    circpad_machine_remove_higher_token(mi,
-         circpad_histogram_bin_to_usec(mi, 1)+1);
-    tt_int_op(mi->histogram[2], OP_EQ, 3);
-    tt_int_op(mi->histogram[1], OP_EQ, 1);
-
-    circpad_machine_remove_higher_token(mi,
-         circpad_histogram_bin_to_usec(mi, 1)+1);
-    tt_int_op(mi->histogram[1], OP_EQ, 0);
-
-    tt_int_op(mi->histogram[2], OP_EQ, 3);
-    circpad_machine_remove_higher_token(mi,
-         circpad_histogram_bin_to_usec(mi, 1)+1);
     tt_int_op(mi->histogram[2], OP_EQ, 2);
+    tt_int_op(mi->histogram[3], OP_EQ, 2);
+    circpad_machine_remove_higher_token(mi,
+         circpad_histogram_bin_to_usec(mi, 2)+1);
+    tt_int_op(mi->histogram[2], OP_EQ, 1);
+
+    circpad_machine_remove_higher_token(mi,
+         circpad_histogram_bin_to_usec(mi, 2)+1);
+    tt_int_op(mi->histogram[2], OP_EQ, 0);
+
+    tt_int_op(mi->histogram[3], OP_EQ, 2);
+    circpad_machine_remove_higher_token(mi,
+         circpad_histogram_bin_to_usec(mi, 2)+1);
+    circpad_machine_remove_higher_token(mi,
+         circpad_histogram_bin_to_usec(mi, 2)+1);
+    circpad_machine_remove_higher_token(mi,
+         circpad_histogram_bin_to_usec(mi, 2)+1);
+    tt_int_op(mi->histogram[3], OP_EQ, 0);
   }
 
   /* 2.b. Higher Infinity bin */
+  {
+    tt_int_op(mi->histogram[4], OP_EQ, 2);
+    circpad_machine_remove_higher_token(mi,
+         circpad_histogram_bin_to_usec(mi, 2)+1);
+    tt_int_op(mi->histogram[4], OP_EQ, 2);
+
+    /* Test past the infinity bin */
+    circpad_machine_remove_higher_token(mi,
+         circpad_histogram_bin_to_usec(mi, 5)+1000000);
+
+    tt_int_op(mi->histogram[4], OP_EQ, 2);
+  }
+
   /* 2.c. Bin 0 */
-  /* 2.d. No higher */
+  {
+    tt_int_op(mi->histogram[0], OP_EQ, 1);
+    circpad_machine_remove_higher_token(mi,
+         state->start_usec/2);
+    tt_int_op(mi->histogram[0], OP_EQ, 0);
+  }
+
+  /* Drain the infinity bin and cause a refill */
+  tt_int_op(mi->histogram[4], OP_EQ, 2);
+  circpad_event_nonpadding_received((circuit_t*)client_side);
+  tt_int_op(mi->histogram[4], OP_EQ, 1);
+  circpad_event_nonpadding_received((circuit_t*)client_side);
+  // We should have refilled there
+  tt_int_op(mi->histogram[4], OP_EQ, 2);
+
+  /* 3.a. Bin 0 */
+  {
+    tt_int_op(mi->histogram[0], OP_EQ, 1);
+    circpad_machine_remove_higher_token(mi,
+         state->start_usec/2);
+    tt_int_op(mi->histogram[0], OP_EQ, 0);
+  }
+
+  /* 3.b. Test remove lower normal bin */
+  {
+    tt_int_op(mi->histogram[3], OP_EQ, 2);
+    circpad_machine_remove_lower_token(mi,
+         circpad_histogram_bin_to_usec(mi, 3)+1);
+    circpad_machine_remove_lower_token(mi,
+         circpad_histogram_bin_to_usec(mi, 3)+1);
+    tt_int_op(mi->histogram[3], OP_EQ, 0);
+    tt_int_op(mi->histogram[2], OP_EQ, 2);
+    circpad_machine_remove_lower_token(mi,
+         circpad_histogram_bin_to_usec(mi, 3)+1);
+    circpad_machine_remove_lower_token(mi,
+         circpad_histogram_bin_to_usec(mi, 3)+1);
+    /* 3.c. No lower */
+    circpad_machine_remove_lower_token(mi,
+         circpad_histogram_bin_to_usec(mi, 3)+1);
+    tt_int_op(mi->histogram[2], OP_EQ, 0);
+  }
+
+  circpad_machine_setup_tokens(mi);
+
+  /* 4. Test remove closest
+   *    a. Closest lower
+   *    b. Closest higher
+   *    c. Closest 0
+   *    d. Closest Infinity
+   */
+  circpad_machine_remove_closest_token(mi,
+         circpad_histogram_bin_to_usec(mi, 3)+1, 1);
+
+  /* 5. Test remove closest usec
+   *    a. Closest lower (below midpoint)
+   *    b. Closest higher (above midpoint)
+   *    c. Closest 0
+   *    d. Closest Infinity
+   */
 
  done:
   free_fake_origin_circuit(TO_ORIGIN_CIRCUIT(client_side));
