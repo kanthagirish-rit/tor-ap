@@ -2348,6 +2348,7 @@ choose_good_middle_server(uint8_t purpose,
     flags |= CRN_NEED_UPTIME;
   if (state->need_capacity)
     flags |= CRN_NEED_CAPACITY;
+  // XXX: Choose by idhex here..
   choice = router_choose_random_node(excluded, options->ExcludeNodes, flags);
   smartlist_free(excluded);
   return choice;

@@ -66,26 +66,19 @@ static channel_t dummy_channel;
 static void
 nodes_init(void)
 {
-  padding_node.ri = tor_malloc_zero(sizeof(routerinfo_t));
-  padding_node.ri->protocol_list =
-                    tor_strdup(protover_get_supported_protocols());
+  padding_node.rs = tor_malloc_zero(sizeof(routerstatus_t));
+  padding_node.rs->supports_padding = 1;
 
-  non_padding_node.ri = tor_malloc_zero(sizeof(routerinfo_t));
-  non_padding_node.ri->protocol_list = tor_strdup("Cons=1-2 Desc=1-2 "
-                                                   "DirCache=1 HSDir=1-2 "
-                                                   "HSIntro=3-4 HSRend=1-2 "
-                                                   "Link=1-4 LinkAuth=1,3 "
-                                                   "Microdesc=1-2 Relay=1-2");
+  non_padding_node.rs = tor_malloc_zero(sizeof(routerstatus_t));
+  non_padding_node.rs->supports_padding = 0;
 }
 
 static void
 nodes_free(void)
 {
-  tor_free(padding_node.ri->protocol_list);
-  tor_free(padding_node.ri);
+  tor_free(padding_node.rs);
 
-  tor_free(non_padding_node.ri->protocol_list);
-  tor_free(non_padding_node.ri);
+  tor_free(non_padding_node.rs);
 }
 
 static const node_t *

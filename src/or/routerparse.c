@@ -2709,6 +2709,8 @@ routerstatus_parse_entry_from_string(memarea_t *area,
       protocol_list_supports_protocol(tok->args[0], PRT_HSINTRO, 4);
     rs->supports_v3_hsdir =
       protocol_list_supports_protocol(tok->args[0], PRT_HSDIR, 2);
+    rs->supports_padding =
+      protocol_list_supports_protocol(tok->args[0], PRT_PADDING, 1);
   }
   if ((tok = find_opt_by_keyword(tokens, K_V))) {
     tor_assert(tok->n_args == 1);

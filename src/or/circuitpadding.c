@@ -510,7 +510,7 @@ circpad_send_command_to_hop(origin_circuit_t *circ, int hopnum,
   // Check that we have at least a 2 hop circuit
   if (circuit_get_cpath_len(circ) < hopnum) {
     log_fn(LOG_WARN,LD_CIRC,
-           "Circuit %u has %d hops, not %d",
+           "Padding circuit %u has %d hops, not %d",
            circ->global_identifier,
            circuit_get_cpath_len(circ), hopnum);
     return -1;
@@ -526,11 +526,14 @@ circpad_send_command_to_hop(origin_circuit_t *circ, int hopnum,
       new_cpath->state != CPATH_STATE_OPEN ||
       new_cpath->next->state != CPATH_STATE_OPEN) {
     log_fn(LOG_WARN,LD_CIRC,
-           "Padding callback on circuit %u without two opened hops.",
+           "Padding command on circuit %u without two opened hops.",
            circ->global_identifier);
     cpath_free_shallow(new_cpath);
     return -1;
   }
+
+  log_fn(LOG_INFO,LD_CIRC, "Negotiating padding on circuit %u.",
+          circ->global_identifier);
 
   /* Send the drop command to the second hop */
   ret = relay_send_command_from_edge(0, TO_CIRCUIT(circ), relay_command,
@@ -559,6 +562,8 @@ circpad_send_padding_cell_for_callback(circpad_machineinfo_t *mi)
     tor_assert(mi->histogram[mi->chosen_bin] > 0);
     mi->histogram[mi->chosen_bin]--;
   }
+
+  log_fn(LOG_INFO,LD_CIRC, "Padding callback. Sending.");
 
   if (CIRCUIT_IS_ORIGIN(mi->on_circ)) {
     circpad_send_command_to_hop(TO_ORIGIN_CIRCUIT(mi->on_circ), 2,
@@ -614,13 +619,13 @@ circpad_machine_schedule_padding(circpad_machineinfo_t *mi)
   struct timeval timeout;
   tor_assert(mi);
 
-  fprintf(stderr, "Scheduling padding?\n");
+  log_fn(LOG_INFO, LD_CIRC, "Scheduling padding?");
   // Don't pad in either state start or end (but
   // also don't cancel any previously scheduled padding
   // either).
   if (mi->current_state == CIRCPAD_STATE_START ||
       mi->current_state == CIRCPAD_STATE_END) {
-    fprintf(stderr, "End state\n");
+    log_fn(LOG_INFO, LD_CIRC, "Padding end state");
     return CIRCPAD_NONPADDING_STATE;
   }
 
@@ -632,7 +637,7 @@ circpad_machine_schedule_padding(circpad_machineinfo_t *mi)
 
   in_us = circpad_machine_sample_delay(mi);
 
-  fprintf(stderr, "Padding in %u usec\n", in_us);
+  log_fn(LOG_INFO,LD_CIRC,"Padding in %u usec\n", in_us);
 
   if (in_us <= 0) {
     mi->padding_was_scheduled_at_us = monotime_absolute_usec();
@@ -650,7 +655,7 @@ circpad_machine_schedule_padding(circpad_machineinfo_t *mi)
   timeout.tv_sec = in_us/USEC_PER_SEC;
   timeout.tv_usec = (in_us%USEC_PER_SEC);
 
-  fprintf(stderr, "Padding in %u sec, %u usec\n",
+  log_fn(LOG_INFO, LD_CIRC, "Padding in %u sec, %u usec\n",
           (unsigned)timeout.tv_sec, (unsigned)timeout.tv_usec);
 
   if (!mi->on_circ->padding_handles[mi->machine_index]) {
@@ -757,7 +762,7 @@ circpad_event_nonpadding_sent(circuit_t *on_circ)
       /* Use INT32_MAX to ensure the addition doesn't overflow */
       if (rtt_time >= INT32_MAX) {
         log_fn(LOG_WARN,LD_CIRC,
-               "Circuit RTT estimate overflowed: "U64_FORMAT
+               "Circuit padding RTT estimate overflowed: "U64_FORMAT
                " vs "U64_FORMAT, U64_PRINTF_ARG(monotime_absolute_usec()),
                U64_PRINTF_ARG(
                  on_circ->padding_info[i]->last_rtt_packet_time_us));
@@ -796,8 +801,8 @@ circpad_event_nonpadding_received(circuit_t *on_circ)
         !on_circ->padding_info[i]->stop_rtt_update) {
       // FIXME: Safelog?
       log_fn(LOG_INFO, LD_CIRC,
-             "Stopping RTT estimation on circuit ("U64_FORMAT", %d) after "
-             "two back to back packets. Current RTT: %d",
+             "Stopping padding RTT estimation on circuit ("U64_FORMAT
+             ", %d) after two back to back packets. Current RTT: %d",
              U64_PRINTF_ARG(on_circ->n_chan ?
                  on_circ->n_chan->global_identifier : 0),
              on_circ->n_circ_id, on_circ->padding_info[i]->rtt_estimate);
@@ -1031,13 +1036,12 @@ circpad_circ_responder_machine_setup(circuit_t *on_circ)
 static int
 circpad_node_supports_padding(const node_t *node)
 {
-  if (node->ri) {
-    const char *protos = node->ri->protocol_list;
-    if (protos == NULL)
-      return 0;
-    return protocol_list_supports_protocol(protos, PRT_PADDING, 1);
+  if (node->rs) {
+    log_fn(LOG_INFO, LD_CIRC, "Checking padding..");
+    return node->rs->supports_padding;
   }
 
+  log_fn(LOG_INFO, LD_CIRC, "Empty routerstatus in padding check");
   return 0;
 }
 
@@ -1052,6 +1056,9 @@ circuit_get_nth_hop(origin_circuit_t *circ, int hop)
 
     // Did we wrap around?
     if (iter == circ->cpath)
+      return NULL;
+
+    if (iter->state != CPATH_STATE_OPEN)
       return NULL;
   }
 

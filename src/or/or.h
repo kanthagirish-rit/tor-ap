@@ -2291,6 +2291,10 @@ typedef struct routerstatus_t {
    * requires HSDir=2. */
   unsigned int supports_v3_hsdir : 1;
 
+  /** True iff this router has a protocol list that allows clients to
+   * negotiate link-level padding. Requires Padding=1. */
+  unsigned int supports_padding : 1;
+
   unsigned int has_bandwidth:1; /**< The vote/consensus had bw info */
   unsigned int has_exitsummary:1; /**< The vote/consensus had exit summaries */
   unsigned int bw_is_unmeasured:1; /**< This is a consensus entry, with
