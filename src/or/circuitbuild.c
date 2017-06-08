@@ -2348,7 +2348,18 @@ choose_good_middle_server(uint8_t purpose,
     flags |= CRN_NEED_UPTIME;
   if (state->need_capacity)
     flags |= CRN_NEED_CAPACITY;
-  // XXX: Choose by idhex here..
+
+  if (options->MiddleNodes) {
+    smartlist_t *sl = smartlist_new();
+    routerset_get_all_nodes(sl, options->MiddleNodes,
+                            options->ExcludeNodes, 1);
+
+    smartlist_subtract(sl, excluded);
+
+    choice = node_sl_choose_by_bandwidth(sl, WEIGHT_FOR_MID);
+    smartlist_free(sl);
+  }
+
   choice = router_choose_random_node(excluded, options->ExcludeNodes, flags);
   smartlist_free(excluded);
   return choice;
