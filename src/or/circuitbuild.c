@@ -2358,9 +2358,15 @@ choose_good_middle_server(uint8_t purpose,
 
     choice = node_sl_choose_by_bandwidth(sl, WEIGHT_FOR_MID);
     smartlist_free(sl);
+    if (choice) {
+      log_fn(LOG_INFO, LD_CIRC, "Chose fixed middle node: %s",
+          hex_str(choice->identity, DIGEST_LEN));
+    } else {
+      log_fn(LOG_NOTICE, LD_CIRC, "Restricted middle not available");
+    }
+  } else {
+    choice = router_choose_random_node(excluded, options->ExcludeNodes, flags);
   }
-
-  choice = router_choose_random_node(excluded, options->ExcludeNodes, flags);
   smartlist_free(excluded);
   return choice;
 }
