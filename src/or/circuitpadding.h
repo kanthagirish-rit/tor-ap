@@ -70,18 +70,18 @@ typedef struct {
   uint16_t range_sec;
 
   /**
-   * This is an array of bitfields that specifies which direction and
-   * types of traffic that cause us to abort our scheduled packet and
-   * switch to the state corresponding to the index of the array.
-   */
-  circpad_transition_t transition_events[CIRCPAD_NUM_STATES];
-
-  /**
    * This is a bitfield that specifies which direction and types
    * of traffic that cause us to remain in the current state. Cancel the
    * pending padding packet (if any), and then await the next event.
    */
   circpad_transition_t transition_cancel_events;
+
+  /**
+   * This is an array of bitfields that specifies which direction and
+   * types of traffic that cause us to abort our scheduled packet and
+   * switch to the state corresponding to the index of the array.
+   */
+  circpad_transition_t transition_events[CIRCPAD_NUM_STATES];
 
   /* If true, estimate the RTT and use that for the histogram base instead of
    * start_usec.

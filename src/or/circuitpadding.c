@@ -1148,14 +1148,17 @@ circpad_state_serialize(const circpad_state_t *state,
                            state->histogram[i]);
   }
 
-#if 0
-  smartlist_add_asprintf(chunks, " %u %u 0x%x %u 0x%x 0x%x %u %u",
-                         state->start_usec, state->range_sec,
-                         state->transition_prev_events, state->prev_state,
-                         state->transition_reschedule_events,
-                         state->transition_next_events, state->next_state,
-                         state->remove_tokens);
-#endif
+  smartlist_add_asprintf(chunks, " 0x%x",
+                         state->transition_cancel_events);
+
+  for (int i = 0; i < CIRCPAD_NUM_STATES; i++) {
+    smartlist_add_asprintf(chunks, ",0x%x",
+                           state->transition_events[i]);
+  }
+
+  smartlist_add_asprintf(chunks, " %u %u",
+                         state->use_rtt_estimate,
+                         state->token_removal);
 }
 
 char *
@@ -1165,8 +1168,11 @@ circpad_machine_to_string(const circpad_machine_t *machine)
   char *out;
 
   smartlist_add_asprintf(chunks,
-                         "0x%x",
+                         "0x%x ",
                          machine->transition_burst_events);
+  smartlist_add_asprintf(chunks,
+                         "0x%x",
+                         machine->transition_gap_events);
 
   circpad_state_serialize(&machine->gap, chunks);
   circpad_state_serialize(&machine->burst, chunks);
