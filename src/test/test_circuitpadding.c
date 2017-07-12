@@ -177,6 +177,7 @@ static int
 circuit_package_relay_cell_mock(cell_t *cell, circuit_t *circ,
                            cell_direction_t cell_direction,
                            crypt_path_t *layer_hint, streamid_t on_stream,
+                           int custom_cpath,
                            const char *filename, int lineno);
 
 static int
@@ -195,8 +196,10 @@ static int
 circuit_package_relay_cell_mock(cell_t *cell, circuit_t *circ,
                            cell_direction_t cell_direction,
                            crypt_path_t *layer_hint, streamid_t on_stream,
+                           int custom_cpath,
                            const char *filename, int lineno) {
   (void)cell; (void)on_stream; (void)filename; (void)lineno;
+  (void)custom_cpath;
 
   if (circ == client_side) {
     tt_int_op(cell_direction, OP_EQ, CELL_DIRECTION_OUT);

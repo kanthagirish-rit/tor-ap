@@ -504,12 +504,14 @@ MOCK_IMPL(int,
 circuit_package_relay_cell, (cell_t *cell, circuit_t *circ,
                            cell_direction_t cell_direction,
                            crypt_path_t *layer_hint, streamid_t on_stream,
+                           int custom_cpath,
                            const char *filename, int lineno))
 {
   channel_t *chan; /* where to send the cell */
 
   if (cell_direction == CELL_DIRECTION_OUT) {
     crypt_path_t *thishop; /* counter for repeated crypts */
+    crypt_path_t *endhop;
     chan = circ->n_chan;
     if (!chan) {
       log_warn(LD_BUG,"outgoing relay cell sent from %s:%d has n_chan==NULL."
@@ -520,6 +522,15 @@ circuit_package_relay_cell, (cell_t *cell, circuit_t *circ,
       log_warn(LD_BUG,"outgoing relay cell sent from %s:%d on non-origin "
                "circ. Dropping.", filename, lineno);
       return 0; /* just drop it */
+    }
+
+    /* Run loop until we hit layer_hint again. (Using layer_hint
+     * rather than the circ->cpath->prev allows leaky-pipe sends with short
+     * cpaths). */
+    if (custom_cpath) {
+      endhop = layer_hint->prev;
+    } else {
+      endhop = TO_ORIGIN_CIRCUIT(circ)->cpath->prev;
     }
 
     relay_set_digest(layer_hint->f_digest, cell);
@@ -535,10 +546,7 @@ circuit_package_relay_cell, (cell_t *cell, circuit_t *circ,
       }
 
       thishop = thishop->prev;
-      /* Run loop until we hit layer_hint again. (Using layer_hint
-       * rather than the circ->cpath->prev allows leaky-pipe sends with short
-       * cpaths). */
-    } while (thishop != layer_hint->prev);
+    } while (thishop != endhop);
 
   } else { /* incoming cell */
     or_circuit_t *or_circ;
@@ -692,6 +700,7 @@ MOCK_IMPL(int,
 relay_send_command_from_edge_,(streamid_t stream_id, circuit_t *circ,
                                uint8_t relay_command, const char *payload,
                                size_t payload_len, crypt_path_t *cpath_layer,
+                               int custom_cpath,
                                const char *filename, int lineno))
 {
   cell_t cell;
@@ -785,7 +794,8 @@ relay_send_command_from_edge_,(streamid_t stream_id, circuit_t *circ,
   }
 
   if (circuit_package_relay_cell(&cell, circ, cell_direction, cpath_layer,
-                                 stream_id, filename, lineno) < 0) {
+                                 stream_id, custom_cpath,
+                                 filename, lineno) < 0) {
     log_warn(LD_BUG,"circuit_package_relay_cell failed. Closing.");
     circuit_mark_for_close(circ, END_CIRC_REASON_INTERNAL);
     return -1;
