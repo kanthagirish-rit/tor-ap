@@ -657,7 +657,7 @@ circpad_machine_schedule_padding(circpad_machineinfo_t *mi)
 
   log_fn(LOG_INFO, LD_CIRC, "Padding in %u sec, %u usec\n",
           (unsigned)timeout.tv_sec, (unsigned)timeout.tv_usec);
-
+  
   if (!mi->on_circ->padding_handles[mi->machine_index]) {
     mi->on_circ->padding_handles[mi->machine_index] =
         circpad_machineinfo_handle_new(mi);
@@ -678,7 +678,7 @@ circpad_machine_schedule_padding(circpad_machineinfo_t *mi)
   //rep_hist_padding_count_timers(++total_timers_pending);
 
   mi->padding_was_scheduled_at_us = monotime_absolute_usec();
-
+  log_fn(LOG_DEBUG, LD_CIRC, "Padding state %d scheduled", mi->current_state);
   return CIRCPAD_PADDING_SCHEDULED;
 }
 
@@ -819,6 +819,7 @@ circpad_event_padding_sent(circuit_t *on_circ)
 {
   for (int i = 0; i < CIRCPAD_MAX_MACHINES && on_circ->padding_info[i];
        i++) {
+    log_fn(LOG_DEBUG, LD_CIRC, "Event padding sent %d", on_circ->n_circ_id);
     circpad_machine_transition(on_circ->padding_info[i],
                              CIRCPAD_TRANSITION_ON_PADDING_SENT);
   }
@@ -829,6 +830,7 @@ circpad_event_padding_received(circuit_t *on_circ)
 {
   for (int i = 0; i < CIRCPAD_MAX_MACHINES && on_circ->padding_info[i];
        i++) {
+    log_fn(LOG_DEBUG, LD_CIRC, "Event padding received %d", on_circ->n_circ_id);
     circpad_machine_transition(on_circ->padding_info[i],
                               CIRCPAD_TRANSITION_ON_PADDING_RECV);
   }

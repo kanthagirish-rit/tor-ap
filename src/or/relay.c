@@ -1590,6 +1590,7 @@ connection_edge_process_relay_cell(cell_t *cell, circuit_t *circ,
   num_seen++;
   log_debug(domain, "Now seen %d relay cells here (command %d, stream %d).",
             num_seen, rh.command, rh.stream_id);
+  log_debug(domain, "Cell command is %d.", cell->command);
 
   if (rh.length > RELAY_PAYLOAD_SIZE) {
     log_fn(LOG_PROTOCOL_WARN, LD_PROTOCOL,
