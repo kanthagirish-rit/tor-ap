@@ -282,6 +282,8 @@ circpad_machine_remove_higher_token(circpad_machineinfo_t *mi,
   } else {
     tor_assert(mi->histogram[i]);
     mi->histogram[i]--;
+    log_fn(LOG_DEBUG, LD_CIRC, "state %d removing token from bin %d",
+      mi->current_state, i);
   }
 }
 
@@ -305,6 +307,8 @@ circpad_machine_remove_lower_token(circpad_machineinfo_t *mi,
     } else {
       tor_assert(mi->histogram[i]);
       mi->histogram[i]--;
+      log_fn(LOG_DEBUG, LD_CIRC, "state %d removing token from bin %d",
+        mi->current_state, i);
     }
   }
 }
@@ -336,11 +340,15 @@ circpad_machine_remove_closest_token(circpad_machineinfo_t *mi,
       // Higher bins are empty
       tor_assert(mi->histogram[lower]);
       mi->histogram[lower]--;
+      log_fn(LOG_DEBUG, LD_CIRC, "state %d removing token from bin %d",
+        mi->current_state, lower);
       return;
     } else if (lower == -1) {
       // Lower bins are empty
       tor_assert(mi->histogram[higher]);
       mi->histogram[higher]--;
+      log_fn(LOG_DEBUG, LD_CIRC, "state %d removing token from bin %d",
+        mi->current_state, higher);
       return;
     }
 
@@ -354,21 +362,29 @@ circpad_machine_remove_closest_token(circpad_machineinfo_t *mi,
         // Lower bin is closer
         tor_assert(mi->histogram[lower]);
         mi->histogram[lower]--;
+        log_fn(LOG_DEBUG, LD_CIRC, "state %d removing token from bin %d",
+          mi->current_state, lower);
         return;
       } else if (target_bin_us > higher_us) {
         // Higher bin is closer
         tor_assert(mi->histogram[higher]);
         mi->histogram[higher]--;
+        log_fn(LOG_DEBUG, LD_CIRC, "state %d removing token from bin %d",
+          mi->current_state, higher);
         return;
       } else if (target_bin_us - lower_us > higher_us - target_bin_us) {
         // Higher bin is closer
         tor_assert(mi->histogram[higher]);
         mi->histogram[higher]--;
+        log_fn(LOG_DEBUG, LD_CIRC, "state %d removing token from bin %d",
+          mi->current_state, higher);
         return;
       } else {
         // Lower bin is closer
         tor_assert(mi->histogram[lower]);
         mi->histogram[lower]--;
+        log_fn(LOG_DEBUG, LD_CIRC, "state %d removing token from bin %d",
+          mi->current_state, lower);
         return;
       }
     } else {
@@ -376,11 +392,15 @@ circpad_machine_remove_closest_token(circpad_machineinfo_t *mi,
         // Higher bin is closer
         tor_assert(mi->histogram[higher]);
         mi->histogram[higher]--;
+        log_fn(LOG_DEBUG, LD_CIRC, "state %d removing token from bin %d",
+          mi->current_state, higher);
         return;
       } else {
         // Lower bin is closer
         tor_assert(mi->histogram[lower]);
         mi->histogram[lower]--;
+        log_fn(LOG_DEBUG, LD_CIRC, "state %d removing token from bin %d",
+          mi->current_state, lower);
         return;
       }
     }
@@ -565,6 +585,9 @@ circpad_send_padding_cell_for_callback(circpad_machineinfo_t *mi)
 
   log_fn(LOG_INFO,LD_CIRC, "Padding callback. Sending.");
 
+  log_fn(LOG_DEBUG, LD_CIRC, "state %d sending dummy cell of NULL payload",
+    mi->current_state);
+  
   if (CIRCUIT_IS_ORIGIN(mi->on_circ)) {
     circpad_send_command_to_hop(TO_ORIGIN_CIRCUIT(mi->on_circ), 2,
                                 RELAY_COMMAND_DROP, NULL, 0);
@@ -693,12 +716,14 @@ circpad_machine_transition(circpad_machineinfo_t *mi,
   if (!state) {
     if (mi->current_state == CIRCPAD_STATE_START) {
       if (CIRCPAD_GET_MACHINE(mi)->transition_burst_events & event) {
+        log_fn(LOG_DEBUG, LD_CIRC, "padding burst transition");
         mi->current_state = CIRCPAD_STATE_BURST;
         circpad_machine_setup_tokens(mi);
         return circpad_machine_schedule_padding(mi);
       }
 
       if (CIRCPAD_GET_MACHINE(mi)->transition_gap_events & event) {
+        log_fn(LOG_DEBUG, LD_CIRC, "padding gap transition");
         mi->current_state = CIRCPAD_STATE_GAP;
         circpad_machine_setup_tokens(mi);
         return circpad_machine_schedule_padding(mi);
@@ -817,9 +842,9 @@ circpad_event_nonpadding_received(circuit_t *on_circ)
 void
 circpad_event_padding_sent(circuit_t *on_circ)
 {
+  log_fn(LOG_DEBUG, LD_CIRC, "Event padding sent %d", on_circ->n_circ_id);
   for (int i = 0; i < CIRCPAD_MAX_MACHINES && on_circ->padding_info[i];
        i++) {
-    log_fn(LOG_DEBUG, LD_CIRC, "Event padding sent %d", on_circ->n_circ_id);
     circpad_machine_transition(on_circ->padding_info[i],
                              CIRCPAD_TRANSITION_ON_PADDING_SENT);
   }
@@ -828,9 +853,9 @@ circpad_event_padding_sent(circuit_t *on_circ)
 void
 circpad_event_padding_received(circuit_t *on_circ)
 {
+  log_fn(LOG_DEBUG, LD_CIRC, "Event padding received %d", on_circ->n_circ_id);
   for (int i = 0; i < CIRCPAD_MAX_MACHINES && on_circ->padding_info[i];
        i++) {
-    log_fn(LOG_DEBUG, LD_CIRC, "Event padding received %d", on_circ->n_circ_id);
     circpad_machine_transition(on_circ->padding_info[i],
                               CIRCPAD_TRANSITION_ON_PADDING_RECV);
   }

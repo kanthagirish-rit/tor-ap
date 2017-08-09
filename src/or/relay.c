@@ -741,6 +741,7 @@ relay_send_command_from_edge_,(streamid_t stream_id, circuit_t *circ,
     rep_hist_padding_count_write(PADDING_TYPE_DROP);
     circpad_event_padding_sent(circ);
   } else {
+    log_fn(LOG_DEBUG, LD_OR, "Event non padding sent %d", circ->n_circ_id);
     circpad_event_nonpadding_sent(circ);
   }
 
@@ -1628,6 +1629,7 @@ connection_edge_process_relay_cell(cell_t *cell, circuit_t *circ,
     log_notice(LD_OR,"Got padding cell!");
     return 0;
   } else {
+    log_fn(LOG_DEBUG, LD_OR, "Event non padding received %d", circ->n_circ_id);
     circpad_event_nonpadding_received(circ);
   }
 
