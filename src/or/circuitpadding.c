@@ -915,6 +915,7 @@ circpad_event_padding_negotiate(circuit_t *circ, cell_t *cell)
 
     switch (negotiate->machine_type) {
       case CIRCPAD_MACHINE_CIRC_SETUP:
+        log_fn(LOG_DEBUG, LD_CIRC, "setting up responder machine.");
         circpad_circ_responder_machine_setup(circ);
         break;
       case CIRCPAD_MACHINE_HS_CLIENT_INTRO:
@@ -968,6 +969,7 @@ static circpad_machine_t circ_client_machine;
 void
 circpad_circ_client_machine_setup(circuit_t *on_circ)
 {
+  log_fn(LOG_DEBUG, LD_CIRC, "client setup start");
   /* Free the old machines (if any) */
   circpad_machines_free(on_circ);
 
@@ -1001,7 +1003,8 @@ circpad_circ_client_machine_setup(circuit_t *on_circ)
   circ_client_machine.burst.histogram_total = 5;
 
   circ_client_machine.is_initialized = 1;
-
+  
+  log_fn(LOG_DEBUG, LD_CIRC, "client setup end");
   return;
 }
 
@@ -1009,6 +1012,7 @@ static circpad_machine_t circ_responder_machine;
 void
 circpad_circ_responder_machine_setup(circuit_t *on_circ)
 {
+  log_fn(LOG_DEBUG, LD_CIRC, "responder setup start");
   /* Free the old machines (if any) */
   circpad_machines_free(on_circ);
 
@@ -1056,7 +1060,8 @@ circpad_circ_responder_machine_setup(circuit_t *on_circ)
   circ_responder_machine.gap.histogram_total = 6;
 
   circ_responder_machine.is_initialized = 1;
-
+  
+  log_fn(LOG_DEBUG, LD_CIRC, "responder setup end");
   return;
 }
 
